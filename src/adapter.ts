@@ -611,7 +611,7 @@ export class NewApiAdapter extends LlmAdapter {
         ? `: ${error.cause.message}`
         : error instanceof Error ? `: ${error.message}` : ''
       // Without an explicit plugin proxy the request still rides whatever
-      // routing the host installed (dsh 0.1.5 installs a global proxy
+      // routing the host installed (dsh 0.1.7 installs a global proxy
       // dispatcher at startup), so the diagnostic must not claim the direct
       // route was tried and failed.
       const remedy = proxyUrl !== undefined

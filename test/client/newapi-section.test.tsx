@@ -12,12 +12,17 @@ afterEach(cleanup)
 
 const t = (key: keyof typeof en): string => en[key]
 
-/** A wire face answering one resolved llm-newapi section (dsh 0.1.5-rc.1 Remote envelopes). */
+/** A wire face answering one resolved llm-newapi section (dsh 0.1.7-rc.1 Remote envelopes). */
 function wireFace(overrides: Partial<{
   describeAnswer: unknown
   credentialsAnswer: unknown
+  settingsNs: string
 }> = {}) {
   return {
+    // dsh 0.1.7 keys the settings form by the profile entry id; the host half
+    // publishes it in the configurable-provider directory. Default here is the
+    // conventional id, and the override lets a test drive a renamed entry.
+    resolveSettingsNs: vi.fn(() => Promise.resolve(overrides.settingsNs ?? 'llm-newapi')),
     describeSettings: vi.fn(() => Promise.resolve({
       ok: true,
       value: overrides.describeAnswer ?? {
@@ -78,6 +83,39 @@ describe('NewApiSection mount', () => {
 
     // The mount itself interrogated the settings plane.
     expect(api.describeSettings).toHaveBeenCalledTimes(1)
+    // The namespace is resolved from the host's provider directory rather than
+    // assumed: on dsh 0.1.7 it is the profile entry id.
+    expect(api.resolveSettingsNs).toHaveBeenCalledTimes(1)
+    expect(api.mutateSettings).not.toHaveBeenCalled()
+  })
+
+  it('drives a renamed profile entry through its published namespace', async () => {
+    const api = wireFace({
+      settingsNs: 'llm-newapi-fork',
+      describeAnswer: {
+        writable: true,
+        hasDocument: true,
+        namespaces: [{
+          ns: 'llm-newapi-fork',
+          schema: {},
+          value: { baseURL: 'http://renamed.local:3000/v1', models: [] },
+          applies: 'live',
+          secrets: [],
+          revision: 3,
+        }],
+      },
+    })
+    render(<NewApiSection api={api as never} t={t} />)
+
+    await waitFor(() => { expect(screen.getByLabelText(t('baseUrl'))).toBeTruthy() })
+    expect((screen.getByLabelText(t('baseUrl')) as HTMLInputElement).value)
+      .toBe('http://renamed.local:3000/v1')
+
+    fireEvent.change(screen.getByLabelText(t('baseUrl')), { target: { value: 'http://renamed.local:4000/v1' } })
+    fireEvent.click(screen.getByText(t('apply')))
+    // Writes go to the resolved id, never to the hard-coded literal.
+    await waitFor(() => { expect(api.mutateSettings).toHaveBeenCalledTimes(1) })
+    expect(api.mutateSettings.mock.calls[0][0]).toBe('llm-newapi-fork')
   })
 
   it('names the missing namespace when the host has no llm-newapi section', async () => {
@@ -218,7 +256,7 @@ describe('models.dev params update', () => {
     render(<NewApiSection api={api as never} t={t} fetchModelParams={paramsFace() as never} />)
 
     await waitFor(() => { expect(screen.getByLabelText(t('proxyToggle'))).toBeTruthy() })
-    // The host (dsh 0.1.5) installs a global proxy dispatcher, so the plugin
+    // The host (dsh 0.1.7) installs a global proxy dispatcher, so the plugin
     // toggle must not be presented as the only network route.
     expect(screen.getByText(t('proxyHint'))).toBeTruthy()
   })

@@ -15,12 +15,11 @@ import type { WireChunk, WireUsage } from './types.ts'
 
 /**
  * Brand a tool-call id locally instead of importing the host helper: the
- * helper is named `CallId` on the rc line and `ToolCallId` on the 0.1.2-alpha
- * and current lines, and in both it is an identity function (`return id` /
- * `return brandString(id`) that exists purely for TypeScript branding.
- * Importing either name as a runtime value would pin the built entry to one
- * host line's export surface and kill the whole loader entry at ESM link time
- * on the other line (issue #3).
+ * helper was named `CallId` on the older rc line and is `ToolCallId` on the
+ * 0.1.7 line, and in both it is an identity function (`return id`) that exists
+ * purely for TypeScript branding. Importing it as a runtime value would pin
+ * the built entry to one host line's export surface and kill the whole loader
+ * entry at ESM link time on a host that spells it differently (issue #3).
  * @param id - the provider-issued (or synthesized) call id.
  * @returns the same string, branded locally; no validation is performed.
  */

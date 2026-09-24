@@ -3,31 +3,18 @@
  * cordis Contexts (no network), then assert the provider-side surface —
  * route registration, configurable-provider directory entry, chat-only
  * discovery filtering over a stubbed gateway listing, credential resolution
- * through the credentials service only (no environment fallback), and the
- * settings write point refusing sections the adapter cannot serve.
+ * through the credentials service only (no environment fallback), the
+ * Loader-driven settings write path (0.1.7 seam: volatile config + the
+ * `internal/config` waterfall), and the chat-completions serialization of
+ * the 0.1.7 message vocabulary.
  */
 import assert from 'node:assert/strict'
 import { existsSync, readFileSync } from 'node:fs'
 import { Context, Service } from '@deepseek-ai/cordis'
+import Loader from '@deepseek-ai/cordis-plugin-loader'
+import z from '@deepseek-ai/schemastery'
 import LlmRuntime, { resolveRetryPolicy } from '@deepseek-ai/dsh-llm'
-import SettingsProvider from '@deepseek-ai/dsh-settings'
 import * as plugin from '../lib/index.js'
-
-/** In-memory settings provider: the smallest real SettingsProvider subclass. */
-class MemorySettings extends SettingsProvider {
-  doc = {}
-
-  constructor(ctx, options) {
-    super(ctx)
-    this.doc = structuredClone(options?.doc ?? {})
-  }
-
-  get writable() { return true }
-
-  load() { return Promise.resolve(structuredClone(this.doc)) }
-
-  async persist(ns, section) { this.doc[ns] = structuredClone(section) }
-}
 
 /** Minimal credentials service: resolve() only, from an in-memory store. */
 class FakeCredentials extends Service {
@@ -57,13 +44,16 @@ class FakeWebServer extends Service {
 }
 
 /**
- * The 0.1.5 connection service, reproduced faithfully enough to catch a
- * regression. On the real package `rpc.handle` is unusable: its `rpc` getter
- * captures the service's OWN context, which injects no `webServer`, so the
- * inner `owner.webServer.register(route)` throws the cordis guard error and
- * the effect swallows it. Only `register(owner, channel, handler)` called with
- * a context that injected `webServer` can install a channel — which is what
- * the plugin must therefore do.
+ * The connection service, reproduced faithfully enough to catch a regression.
+ * On the real package `rpc.handle` is unusable: its `rpc` getter captures the
+ * service's OWN context, which injects no `webServer`, so the inner
+ * `owner.webServer.register(route)` throws the cordis guard error and the
+ * effect swallows it. Only `register(owner, channel, handler)` called with a
+ * context that injected `webServer` can install a channel — which is what the
+ * plugin must therefore do. The 0.1.7 line keeps this shape (the `register`
+ * method is private on the service prototype, not on `HostConnectionHandle`),
+ * and its `rpcFetchHandler` now also passes a fourth `peer` argument the
+ * plugin's handler does not need.
  */
 class FakeConnection extends Service {
   constructor(ctx, channels) {
@@ -85,13 +75,37 @@ class FakeConnection extends Service {
   }
 }
 
-async function mountPlugin(ctx, config = {}) {
+function mountPlugin(ctx, config = {}) {
   return ctx.plugin({
     name: plugin.name,
     inject: plugin.inject,
     Config: plugin.Config,
     apply: plugin.apply,
   }, config)
+}
+
+/**
+ * Mount the plugin behind a real Loader, which is the only path that owns a
+ * profile entry: the 0.1.7 settings seam keys the namespace by
+ * `fiber.entry.options.id`, and the volatile-commit path lives in
+ * `Entry.update`/`_commitVolatile`.
+ * @param ctx - context already carrying LlmRuntime and credentials.
+ * @param config - initial raw profile config.
+ * @returns the resolved entry and its fiber.
+ */
+async function mountPluginUnderLoader(ctx, config = {}) {
+  if (ctx.get('loader') === undefined) await ctx.plugin(Loader)
+  const name = `smoke-newapi-${String(Object.keys(ctx.loader.builtins).length)}`
+  ctx.loader.builtins[name] = {
+    name: plugin.name,
+    inject: plugin.inject,
+    Config: plugin.Config,
+    apply: plugin.apply,
+  }
+  const id = await ctx.loader.create({ id: 'llm-newapi', name: `cordis:${name}`, config })
+  const entry = ctx.loader.resolve(id)
+  await entry.fiber.await()
+  return entry
 }
 
 /** Stub fetch to answer a models listing and record the request. */
@@ -191,23 +205,37 @@ function stubModelsListing() {
   assert.equal(asked.auth, 'Bearer stored-key')
 }
 
-// ── Block C: the settings write point refuses unserviceable sections ──
+// ── Block C: the 0.1.7 settings write path refuses unserviceable sections ──
+// The dsh 0.1.7 seam has no `settings.installSection`: the plugin declares
+// every editable field with `.volatile()`, the Loader commits new values into
+// the running refs in place, and the plugin's `internal/config` waterfall
+// hook is the one write-time validation boundary — the same hook shape
+// `configEditor.edit` and `Entry.update` both run.
 {
   const ctx = new Context()
   await ctx.plugin(LlmRuntime)
-  await ctx.plugin(MemorySettings, {})
   await ctx.plugin(FakeCredentials, { newapi: 'block-c-key' })
-  await mountPlugin(ctx)
+  const entry = await mountPluginUnderLoader(ctx, { baseURL: 'http://settings-gw:9000/v1' })
 
-  // A schema-valid but unserviceable baseURL rejects at the write, so it can
-  // never store and silently pin the adapter to the last good facts.
-  await assert.rejects(
-    ctx.settings.update('llm-newapi', { baseURL: 'not-a-url' }),
-    (error) => error.message.includes('baseURL must be an absolute http(s) URL'),
-  )
+  // The namespace key follows the profile entry id, so the 0.1.7 Models page
+  // can join the directory entry with the settings namespace.
+  const directory = ctx.llm.listConfigurableProviders()
+  assert.equal(directory[0].settingsNs, 'llm-newapi')
+
+  // The loader committed the volatile reference in place.
+  const ref = entry.fiber.config.baseURL
+  assert.equal(ref.get(), 'http://settings-gw:9000/v1')
+
+  // A schema-valid but unserviceable baseURL is refused by the waterfall: the
+  // running reference keeps the last good value instead of pinning the
+  // adapter to a broken endpoint.
+  await entry.update({ config: { baseURL: 'not-a-url' } })
+  assert.equal(ref.get(), 'http://settings-gw:9000/v1',
+    'an unserviceable baseURL must not be committed into the running reference')
 
   // A serviceable section commits and the very next discovery uses it.
-  await ctx.settings.update('llm-newapi', { baseURL: 'http://settings-gw:9000/v1' })
+  await entry.update({ config: { baseURL: 'http://settings-gw:9100/v1' } })
+  assert.equal(ref.get(), 'http://settings-gw:9100/v1')
   const { asked, restore } = stubModelsListing()
   try {
     const found = await ctx.llm.discoverModels('llm-newapi', { provider: 'newapi' })
@@ -215,7 +243,36 @@ function stubModelsListing() {
   } finally {
     restore()
   }
-  assert.equal(asked.url, 'http://settings-gw:9000/v1/models')
+  assert.equal(asked.url, 'http://settings-gw:9100/v1/models')
+
+  // The volatile commit is a loader/volatile-update event, not a remount: the
+  // fiber identity survives and the route stays registered throughout.
+  assert.equal(ctx.llm.listProviders().length, 1)
+
+  // An enabled proxy with a non-http(s) url is refused the same way.
+  await entry.update({ config: { baseURL: 'http://settings-gw:9100/v1', proxy: { enabled: true, url: 'ftp://x' } } })
+  assert.equal(entry.fiber.config.proxy.get().url, 'http://127.0.0.1:7890',
+    'an unserviceable proxy url must not be committed')
+
+  // The waterfall hook is scoped to this plugin's own fiber: a neighbouring
+  // plugin whose config happens to violate the newapi rules (a non-URL
+  // `baseURL`) must still commit normally. Without the `this !== ctx.fiber`
+  // guard the neighbour's own settings page would be unable to save.
+  const neighbourName = 'smoke-neighbour'
+  ctx.loader.builtins[neighbourName] = {
+    name: neighbourName,
+    Config: z.object({ baseURL: z.string().volatile() }),
+    apply() {},
+  }
+  const neighbour = ctx.loader.resolve(await ctx.loader.create({
+    id: 'llm-newapi-neighbour', name: `cordis:${neighbourName}`, config: { baseURL: 'http://neighbour.local/v1' },
+  }))
+  await neighbour.fiber.await()
+  await neighbour.update({ config: { baseURL: 'not-a-url-either' } })
+  assert.equal(neighbour.fiber.config.baseURL.get(), 'not-a-url-either',
+    'a neighbouring plugin volatile edit must not be judged by this adapter rules')
+  // ...and our own reference is untouched by that neighbour edit.
+  assert.equal(ref.get(), 'http://settings-gw:9100/v1')
 }
 
 // ── Block D: discovery ordering, display names, and the models.dev match ──
@@ -335,13 +392,73 @@ function stubModelsListing() {
   const wired = plugin.serializeRequest({ model: 'qwen3-32b', messages: [], system: undefined, tools: undefined, reasoningEffort: 'high' })
   assert.equal(wired.reasoning_effort, 'high')
   assert.equal('reasoning_effort' in plugin.serializeRequest({ model: 'qwen3-32b', messages: [] }), false)
+}
 
-  // The settings write point refuses an enabled proxy with a non-http(s) url.
-  await ctx.plugin(MemorySettings, {})
-  await assert.rejects(
-    ctx.settings.update('llm-newapi', { proxy: { enabled: true, url: 'ftp://x' } }),
-    (error) => error.message.includes('proxy.url must be an http(s) URL'),
-  )
+// ── Block H2: the 0.1.7 message vocabulary serializes correctly ──
+// The 0.1.7 seam replaced the in-band `tool-result` block with a first-class
+// `role: 'tool'` message carrying `toolCallId`, added a `developer` role for
+// Session V4 tool changes, and made `RequestMessage` a union that admits
+// identity-free user inputs. This block pins each mapping.
+{
+  const text = (value) => [{ type: 'text', text: value }]
+  const wire = plugin.serializeRequest({
+    provider: 'newapi',
+    model: 'glm-5.3',
+    messages: [
+      { id: 's', role: 'system', content: text('system'), source: { kind: 'system-prompt' } },
+      { id: 'u', role: 'user', content: text('hi'), source: { kind: 'user' } },
+      // Identity-free user input (RequestUserInput): no id, no source.
+      { role: 'user', content: text('again') },
+      {
+        id: 'a', role: 'assistant',
+        content: [
+          { type: 'reasoning', text: 'because' },
+          { type: 'tool-call', id: 'c1', name: 'f', arguments: '{"x":1}' },
+        ],
+        source: { kind: 'model', provider: 'newapi', model: 'glm-5.3' },
+      },
+      // First-class tool-role message: the call id is the message field, not a block.
+      { id: 't', role: 'tool', content: text('result'), source: { kind: 'tool', callId: 'c1' }, toolCallId: 'c1' },
+    ],
+  })
+  assert.deepEqual(wire.messages, [
+    { role: 'system', content: 'system' },
+    { role: 'user', content: 'hi' },
+    { role: 'user', content: 'again' },
+    {
+      role: 'assistant', content: '',
+      // DeepSeek-family passback: reasoning returns only on tool-call turns.
+      reasoning_content: 'because',
+      tool_calls: [{ id: 'c1', type: 'function', function: { name: 'f', arguments: '{"x":1}' } }],
+    },
+    { role: 'tool', tool_call_id: 'c1', content: 'result' },
+  ])
+
+  // An empty tool result still needs SOME content on the wire.
+  const empty = plugin.serializeRequest({
+    provider: 'newapi', model: 'm',
+    messages: [{ id: 't', role: 'tool', content: [], source: { kind: 'tool', callId: 'c9' }, toolCallId: 'c9' }],
+  })
+  assert.equal(empty.messages[0].content, '(no output)')
+
+  // Developer history and the Session V4 tool-change blocks are refused: the
+  // chat-completions wire carries neither, and silently dropping them would
+  // make the model's tool set diverge from the harness's belief.
+  assert.throws(() => plugin.serializeRequest({
+    provider: 'newapi', model: 'm',
+    messages: [{ id: 'd', role: 'developer', content: [{ type: 'tool-removal', toolName: 'f' }], source: { kind: 'user' } }],
+  }), (error) => error.code === 'UNSUPPORTED_CONTENT' && /developer messages/.test(error.message))
+  assert.throws(() => plugin.serializeRequest({
+    provider: 'newapi', model: 'm',
+    messages: [{ id: 'u', role: 'user', content: [{ type: 'tool-addition', toolName: 'f' }], source: { kind: 'user' } }],
+  }), (error) => error.code === 'UNSUPPORTED_CONTENT' && /tool-addition/.test(error.message))
+
+  // Deferred tool loading is refused for the same reason: an OpenAI-compatible
+  // gateway cannot honour deferred materialisation.
+  assert.throws(() => plugin.serializeRequest({
+    provider: 'newapi', model: 'm', messages: [],
+    tools: [{ name: 'f', description: 'd', parameters: {}, deferLoading: true }],
+  }), (error) => error.code === 'UNSUPPORTED_CONTENT' && /deferred tool loading/.test(error.message))
 }
 
 // ── Block E: the models-dev RPC channel registers once connection starts ──
@@ -357,8 +474,8 @@ function stubModelsListing() {
   await ctx.plugin(FakeConnection, registered)
 
   // The inject scope ran as soon as both services appeared. Loopback-only
-  // exposure is the connection service's own fence in the 0.1.5 line:
-  // channel registration no longer carries a per-handle authority option.
+  // exposure is the connection service's own fence: channel registration no
+  // longer carries a per-handle authority option.
   assert.equal(registered.length, 1)
   assert.equal(registered[0].channel, '/llm-newapi')
 
@@ -524,7 +641,16 @@ function stubModelsListing() {
   assert.equal(chunks.at(-1).reason.kind, 'tool-calls')
 }
 
-// ── Block H (optional): real-catalog check against the local dev cache ──
+// ── Block I: the plugin refuses a host whose dsh-llm predates the seam ──
+// The version guard is the same one the host-compat fixture reproduces
+// offline; asserting the message shape here keeps the two in step.
+{
+  assert.match(plugin.PKG, /^llm-newapi$/)
+  const source = readFileSync(new URL('../src/index.ts', import.meta.url), 'utf8')
+  assert.match(source, /const MINIMUM_DSH_VERSION = '0\.1\.7-rc\.1'/)
+}
+
+// ── Optional block: real-catalog check against the local dev cache ──
 // .cache/models-dev.api.json (npm run cache:models-dev, gitignored) carries
 // the catalog's real field shapes; when present, matchModelsDev is exercised
 // against it so schema drift in models.dev surfaces here first. Absent, the
@@ -548,4 +674,4 @@ function stubModelsListing() {
   }
 }
 
-console.log('smoke: llm-newapi registrations, chat-only discovery, credentials-service key, settings validation, ordering, display names, models.dev matching, deferred RPC channel, dead-proxy diagnostics, and empty-string tool-call delta hardening OK')
+console.log('smoke: llm-newapi registrations, chat-only discovery, credentials-service key, volatile settings writes, 0.1.7 message vocabulary, ordering, display names, models.dev matching, deferred RPC channel, dead-proxy diagnostics, and empty-string tool-call delta hardening OK')

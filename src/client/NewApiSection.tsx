@@ -127,6 +127,14 @@ function IconTrash(): ReactNode {
 export interface NewApiWire {
   /** Whole-document settings describe (redacted): writability + one view per registered namespace. */
   describeSettings(): Promise<RemoteResult<SettingsDescribeValue>>
+  /**
+   * Resolve this plugin's settings namespace. On dsh 0.1.7 the settings form
+   * is keyed by the profile entry id, not by a fixed section name, so the id
+   * is read back from the configurable-provider directory the host half
+   * declared. Falls back to the conventional id when the directory has no
+   * entry (a composition without the plugin's own registration).
+   */
+  resolveSettingsNs(): Promise<string>
   /** Path-op write to one namespace, fenced by the revision the draft read. */
   mutateSettings(
     ns: string,
@@ -202,6 +210,14 @@ export function NewApiSection(props: NewApiSectionProps): ReactNode {
   const { api, t, fetchModelParams } = props
   const [status, setStatus] = useState<'loading' | 'ready' | 'error'>('loading')
   const [errorText, setErrorText] = useState<string | undefined>(undefined)
+  /**
+   * This plugin's settings namespace id, resolved from the host's
+   * configurable-provider directory on mount. On dsh 0.1.7 the settings form
+   * is keyed by the profile entry id, so a hard-coded literal would break for
+   * a renamed entry; the initial value is the conventional id used until the
+   * first resolution lands.
+   */
+  const [settingsNs, setSettingsNs] = useState<string>(NS)
   const [revision, setRevision] = useState<number>(0)
   const [writable, setWritable] = useState(true)
   const [keyConfigured, setKeyConfigured] = useState<boolean | undefined>(undefined)
@@ -243,6 +259,10 @@ export function NewApiSection(props: NewApiSectionProps): ReactNode {
     setStatus('loading')
     setErrorText(undefined)
     try {
+      // Resolve the namespace first: on dsh 0.1.7 it is the profile entry id,
+      // which the host half publishes in the configurable-provider directory.
+      const ns = await api.resolveSettingsNs()
+      setSettingsNs(ns)
       const described = await api.describeSettings()
       if (!described.ok) {
         setErrorText(described.error.message)
@@ -250,7 +270,7 @@ export function NewApiSection(props: NewApiSectionProps): ReactNode {
         return
       }
       setWritable(described.value.writable)
-      const section = described.value.namespaces.find((entry: SettingsNamespaceView) => entry.ns === NS)
+      const section = described.value.namespaces.find((entry: SettingsNamespaceView) => entry.ns === ns)
       if (section === undefined) {
         setErrorText(t('nsNotRegistered'))
         setStatus('error')
@@ -353,7 +373,7 @@ export function NewApiSection(props: NewApiSectionProps): ReactNode {
           }
         }),
       })
-      const mutated = await api.mutateSettings(NS, ops, revision)
+      const mutated = await api.mutateSettings(settingsNs, ops, revision)
       if (!mutated.ok) {
         setErrorText(mutated.error.message)
         return
@@ -382,7 +402,7 @@ export function NewApiSection(props: NewApiSectionProps): ReactNode {
     setCandidates(undefined)
     try {
       const key = keyDraft.trim()
-      const response = await api.discoverModels(NS, {
+      const response = await api.discoverModels(settingsNs, {
         provider: 'newapi',
         ...baseURL.trim().length > 0 ? { baseURL: baseURL.trim() } : {},
         ...key.length > 0 ? { apiKey: key } : {},

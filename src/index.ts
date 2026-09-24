@@ -1,27 +1,33 @@
 /**
  * Register a {@link NewApiAdapter} for the `newapi` provider route on
- * `ctx.llm`, with connection facts resolved per request instead of frozen at
- * load: the plugin layers its `cordis.yml` entry config under the optional
- * `llm-newapi` user-settings section (`ctx.settings`) and resolves the API
- * key through the optional credential seam (`ctx.credentials`), so a changed
- * base URL, catalog, or key reaches the very next request without restarting
- * anything, while an in-flight stream keeps the facts it started with. The
- * one registration-captured fact — the retry policy — re-registers the route
- * in place when it changes. The plugin also serves model discovery for the
- * `llm-newapi` settings namespace by interrogating `GET {baseURL}/models`.
+ * `ctx.llm`, with connection facts resolved per request: the plugin layers
+ * its profile entry config under `fiber.entry.options.config` (the dsh 0.1.7
+ * settings seam — `ctx.settings` now projects forms off `Config` directly, no
+ * `installSection` and no `setSource`/`validate`/`onChange` callbacks) and
+ * resolves the API key through the credential seam (`ctx.credentials`), so a
+ * changed base URL, catalog, or key reaches the very next request without
+ * restarting anything while an in-flight stream keeps the facts it started
+ * with. The one registration-captured fact — the retry policy — re-registers
+ * the route in place when it changes; the listener hooks `loader/volatile-update`
+ * so the in-place swap survives a volatile-only edit. A candidate section
+ * that fails serviceability is refused at the write boundary by the
+ * `internal/config` waterfall hook (mirroring `llm-pi-ai`'s `assertServiceable`).
  * @module dsh-llm-newapi
  */
 
-import type { Context } from '@deepseek-ai/cordis'
+import type { Context, Fiber } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
+import type { Volatile } from '@deepseek-ai/cordis'
 import { assertUsableApiKey, LlmError, resolveRetryPolicy, RetryPolicySchema } from '@deepseek-ai/dsh-llm'
 import type { RetryPolicyConfig } from '@deepseek-ai/dsh-llm'
 import llmManifest from '@deepseek-ai/dsh-llm/package.json' with { type: 'json' }
 import { credentialRef } from '@deepseek-ai/dsh-credentials'
 import { launchEnvironmentOf } from '@deepseek-ai/dsh-launch-environment'
-// Type-only: pulls the cordis Context merge that adds the `settings`
-// service (ctx.settings.installSection) into this program.
+// Type-only: pulls the cordis `Context` merge that adds the `settings`
+// service (`SettingsForms`) and the `loader/volatile-update` event into this
+// program.
 import type {} from '@deepseek-ai/dsh-settings'
+import type {} from '@deepseek-ai/cordis-plugin-loader'
 import { MAX_TIMER_DELAY_MS } from '@deepseek-ai/dsh-timeout'
 import {
   DEFAULT_CONTEXT_WINDOW,
@@ -50,7 +56,7 @@ export { serializeRequest } from './serialize.ts'
 export type { NewApiAdapterOptions, NewApiCatalogModel, NewApiConnectionOptions } from './adapter.ts'
 export type * from './types.ts'
 
-const MINIMUM_DSH_VERSION = '0.1.5-rc.1'
+const MINIMUM_DSH_VERSION = '0.1.7-rc.1'
 
 type SemverIdentifier = number | string
 interface ParsedSemver {
@@ -142,50 +148,62 @@ export const DEFAULT_BASE_URL = 'https://newapi.example.com/v1'
 const PROVIDER = 'newapi'
 
 /**
+ * Volatile field protocol key from `@deepseek-ai/cosmokit`. `Symbol.for`
+ * makes it stable across ESM/CJS copies, so the predicate identifies
+ * references without depending on cosmokit at runtime — the entry must still
+ * load against the previously supported dsh line without resolving any package
+ * that host version did not install.
+ */
+const VOLATILE_WRITE = Symbol.for('cosmokit.volatile.write')
+/**
  * Plugin config, validated by the same-named schemastery schema and doubling
- * as the `llm-newapi` settings-section shape. Every field is optional in
- * yml: `baseURL` falls back to $NEWAPI_BASE_URL from a trusted environment
- * layer, then the placeholder {@link DEFAULT_BASE_URL} — a request against
- * the placeholder fails as TRANSPORT at first use, naming the endpoint to
- * fix. The API key is not a config value at all: it lives in the
- * credentials store under the fixed reference `newapi` (the web settings
+ * as the live `llm-newapi` settings-section shape on the dsh 0.1.7 line.
+ * Every field is marked `.volatile()` so the form projects every editable
+ * field, the loader writes them through the profile patch, and the plugin
+ * reads the current value through {@link Volatile} references — the references
+ * are committed in place by the loader on `loader/volatile-update`. Every
+ * field is optional in yml: `baseURL` falls back to $NEWAPI_BASE_URL from a
+ * trusted environment layer, then the placeholder {@link DEFAULT_BASE_URL} —
+ * a request against the placeholder fails as TRANSPORT at first use, naming
+ * the endpoint to fix. The API key is not a config value at all: it lives in
+ * the credentials store under the fixed reference `newapi` (the web settings
  * page writes it), and a request without any stored key fails with
  * `MISSING_CREDENTIAL`, not at plugin load.
  */
 export interface Config {
   /** Gateway base including the `/v1` prefix; defaults to $NEWAPI_BASE_URL from a trusted layer, then the placeholder `https://newapi.example.com/v1`. */
-  baseURL?: string
+  baseURL: Volatile<string | undefined>
   /** Advisory models shown by discovery consumers; defaults to none — a gateway's model set is deployment-specific. */
-  models?: NewApiCatalogModel[]
+  models: Volatile<NewApiCatalogModel[]>
   /**
    * Case-insensitive id substrings excluding discovered models that cannot
    * serve chat completions (embedding, rerank, ranker families). Replaces the
    * default {@link DEFAULT_MODEL_EXCLUDE_PATTERNS} list; an empty array
    * disables filtering. The hand-curated {@link models} catalog is unaffected.
    */
-  modelExcludePatterns?: string[]
+  modelExcludePatterns: Volatile<string[]>
   /** Positive context capacity used when the selected model has no exact value (default 128,000). */
-  defaultContextWindow?: number
+  defaultContextWindow: Volatile<number>
   /** Default per-request output cap; omission sends no cap and lets each upstream default apply. */
-  maxTokens?: number
+  maxTokens: Volatile<number | undefined>
   /** Maximum gateway idle time while one stream read is outstanding (default five minutes). */
-  streamIdleTimeoutMs?: number
+  streamIdleTimeoutMs: Volatile<number>
   /**
    * Forward proxy for the models.dev catalog download performed by the
    *「更新模型信息」action: disabled by default; when enabled, that one
    * request is routed through `proxy.url` (a plain HTTP forward proxy).
    * Gateway traffic is untouched.
    */
-  proxy?: ProxyConfig
+  proxy: Volatile<ProxyConfig>
   /**
    * Match-shaping hints for the models.dev params lookup: family prefixes
    * and exact ids name which catalog provider counts as official (leading
    * match, flagged). Built-in families (glm→zai, gpt→openai, claude→
    * anthropic, …) apply first; these entries override and extend them.
    */
-  providerHints?: ProviderHints
+  providerHints: Volatile<ProviderHints>
   /** Provider-owned model-request retry policy; omission uses normal defaults. */
-  retryPolicy?: RetryPolicyConfig
+  retryPolicy: Volatile<RetryPolicyConfig | undefined>
 }
 
 /** Forward-proxy settings for the models.dev catalog download. */
@@ -194,6 +212,29 @@ export interface ProxyConfig {
   enabled?: boolean
   /** Proxy URL; presets default to `http://127.0.0.1:7890`. */
   url?: string
+}
+
+/**
+ * Plain options the resolver consumes. Volatile refs (or a programmatically
+ * built plain object that bypassed the schema) are unwrapped through
+ * {@link plainOptions}; the resolver never sees a `Volatile` wrapper.
+ */
+export type Options = {
+  [K in keyof Config]?: Config[K] extends Volatile<infer T> ? Exclude<T, undefined> : never
+}
+
+/**
+ * Unwrap every {@link Volatile} reference on a parsed Config. Tolerates
+ * programmatically constructed plain objects (tests, programmatic callers)
+ * by falling back to the raw value when the volatile write key is absent.
+ */
+export function plainOptions(config: Config): Options {
+  const read = (value: unknown): unknown => typeof value === 'object' && value !== null && VOLATILE_WRITE in value
+    ? (value as unknown as Volatile<unknown>).get()
+    : value
+  const out: Record<string, unknown> = {}
+  for (const [key, value] of Object.entries(config)) out[key] = read(value)
+  return out as Options
 }
 
 const catalogModel: z<NewApiCatalogModel> = z.object({
@@ -214,19 +255,28 @@ const proxySchema: z<ProxyConfig> = z.object({
   url: z.string().default(DEFAULT_PROXY_URL),
 })
 
-export const Config: z<Config> = z.object({
-  baseURL: z.string(),
-  models: z.array(catalogModel).default([]),
-  modelExcludePatterns: z.array(z.string()).default([...DEFAULT_MODEL_EXCLUDE_PATTERNS]),
-  defaultContextWindow: z.number().step(1).min(1).default(DEFAULT_CONTEXT_WINDOW),
-  maxTokens: z.number().step(1).min(1).max(Number.MAX_SAFE_INTEGER),
-  streamIdleTimeoutMs: z.number().min(Number.MIN_VALUE).max(MAX_TIMER_DELAY_MS).default(DEFAULT_STREAM_IDLE_TIMEOUT_MS),
-  proxy: proxySchema.default({ enabled: false, url: DEFAULT_PROXY_URL }),
+/**
+ * Schema-backed plugin Config. Every field is `.volatile()` so the dsh
+ * 0.1.7 settings form projects every editable field; the loader writes
+ * them through the profile patch and commits new values into the running
+ * `Volatile` references in place. Required fields use `.required()` so the
+ * output type is `Volatile<T>` (mode `volatile-defined`); optional fields
+ * produce `Volatile<T | undefined>` (mode `volatile`) and are allowed to
+ * default or be omitted.
+ */
+export const Config = z.object({
+  baseURL: z.string().volatile(),
+  models: z.array(catalogModel).default([]).volatile(),
+  modelExcludePatterns: z.array(z.string()).default([...DEFAULT_MODEL_EXCLUDE_PATTERNS]).volatile(),
+  defaultContextWindow: z.number().step(1).min(1).default(DEFAULT_CONTEXT_WINDOW).volatile(),
+  maxTokens: z.number().step(1).min(1).max(Number.MAX_SAFE_INTEGER).volatile(),
+  streamIdleTimeoutMs: z.number().min(Number.MIN_VALUE).max(MAX_TIMER_DELAY_MS).default(DEFAULT_STREAM_IDLE_TIMEOUT_MS).volatile(),
+  proxy: proxySchema.default({ enabled: false, url: DEFAULT_PROXY_URL }).volatile(),
   providerHints: z.object({
     defaults: z.object({}),
     models: z.object({}),
-  }),
-  retryPolicy: RetryPolicySchema,
+  }).volatile(),
+  retryPolicy: RetryPolicySchema.volatile(),
 })
 
 /**
@@ -281,38 +331,38 @@ function resolveModels(models: readonly NewApiCatalogModel[] | undefined): NewAp
 }
 
 /**
- * The one explicit resolve step from raw config to validated connection
+ * The one explicit resolve step from raw options to validated connection
  * facts. Programmatic construction may bypass Schemastery normalization, so
  * every default and bound is re-judged here — for the composition entry at
  * load (fail loud) and for each settings snapshot at its first use.
- * @param config - raw plugin config or resolved settings snapshot.
+ * @param options - plain plugin options or resolved settings snapshot.
  * @param environment - this run's environment layers, or `undefined` outside
  * the product CLI. A trusted layer may supply the gateway endpoint.
  * @returns validated connection facts plus the credential reference.
  */
-export function resolveAdapterOptions(config: Config, environment?: ReturnType<typeof launchEnvironmentOf>): ResolvedNewApiOptions {
+export function resolveAdapterOptions(options: Options, environment?: ReturnType<typeof launchEnvironmentOf>): ResolvedNewApiOptions {
   // Absent everywhere is the placeholder, not a load failure: the plugin stays
   // mountable so configuration surfaces can offer the route, and a request
   // against the placeholder fails as TRANSPORT at first use, naming the
   // endpoint to fix. A value someone actually typed must still be a usable
   // http(s) URL, which normalizeBaseUrl enforces below.
-  const named = config.baseURL !== undefined && config.baseURL.trim().length > 0
-    ? config.baseURL
+  const named = options.baseURL !== undefined && options.baseURL.trim().length > 0
+    ? options.baseURL
     : environment?.get(BASE_URL_ENV)?.value
   const rawBase = named !== undefined && named.trim().length > 0 ? named : DEFAULT_BASE_URL
-  const modelExcludePatterns = config.modelExcludePatterns ?? [...DEFAULT_MODEL_EXCLUDE_PATTERNS]
+  const modelExcludePatterns = options.modelExcludePatterns ?? [...DEFAULT_MODEL_EXCLUDE_PATTERNS]
   for (const pattern of modelExcludePatterns) {
     if (pattern.length === 0) throw new Error(`${PKG}: modelExcludePatterns entries must be non-empty`)
   }
-  if (config.defaultContextWindow !== undefined
-    && (!Number.isInteger(config.defaultContextWindow) || config.defaultContextWindow <= 0)) {
+  if (options.defaultContextWindow !== undefined
+    && (!Number.isInteger(options.defaultContextWindow) || options.defaultContextWindow <= 0)) {
     throw new Error(`${PKG}: defaultContextWindow must be a positive integer`)
   }
-  if (config.maxTokens !== undefined
-    && (!Number.isSafeInteger(config.maxTokens) || config.maxTokens <= 0)) {
+  if (options.maxTokens !== undefined
+    && (!Number.isSafeInteger(options.maxTokens) || options.maxTokens <= 0)) {
     throw new Error(`${PKG}: maxTokens must be a positive safe integer`)
   }
-  const streamIdleTimeoutMs = config.streamIdleTimeoutMs ?? DEFAULT_STREAM_IDLE_TIMEOUT_MS
+  const streamIdleTimeoutMs = options.streamIdleTimeoutMs ?? DEFAULT_STREAM_IDLE_TIMEOUT_MS
   if (!Number.isFinite(streamIdleTimeoutMs)
     || streamIdleTimeoutMs <= 0
     || streamIdleTimeoutMs > MAX_TIMER_DELAY_MS) {
@@ -320,9 +370,9 @@ export function resolveAdapterOptions(config: Config, environment?: ReturnType<t
       `${PKG}: streamIdleTimeoutMs must be a positive finite number no greater than ${MAX_TIMER_DELAY_MS}`,
     )
   }
-  const defaultContextWindow = config.defaultContextWindow ?? DEFAULT_CONTEXT_WINDOW
-  const proxyEnabled = config.proxy?.enabled === true
-  const proxyUrlRaw = config.proxy?.url ?? DEFAULT_PROXY_URL
+  const defaultContextWindow = options.defaultContextWindow ?? DEFAULT_CONTEXT_WINDOW
+  const proxyEnabled = options.proxy?.enabled === true
+  const proxyUrlRaw = options.proxy?.url ?? DEFAULT_PROXY_URL
   if (proxyEnabled) {
     // Only judged while enabled: a stored disabled proxy with a stale URL
     // must not fail the whole section.
@@ -336,44 +386,71 @@ export function resolveAdapterOptions(config: Config, environment?: ReturnType<t
   return {
     baseURL: normalizeBaseUrl(rawBase),
     apiKeyRef: credentialRef(API_KEY_REF),
-    models: resolveModels(config.models),
+    models: resolveModels(options.models),
     modelExcludePatterns,
     defaultContextWindow,
     streamIdleTimeoutMs,
     ...proxyEnabled ? { proxyUrl: proxyUrlRaw } : {},
     providerHints: {
-      defaults: { ...config.providerHints?.defaults },
-      models: { ...config.providerHints?.models },
+      defaults: { ...options.providerHints?.defaults },
+      models: { ...options.providerHints?.models },
     },
-    retryPolicy: resolveRetryPolicy(config.retryPolicy, `${PKG}: retryPolicy`),
-    ...config.maxTokens === undefined ? {} : { maxTokens: config.maxTokens },
+    retryPolicy: resolveRetryPolicy(options.retryPolicy, `${PKG}: retryPolicy`),
+    ...options.maxTokens === undefined ? {} : { maxTokens: options.maxTokens },
   }
 }
 
 export function apply(ctx: Context, config: Config): void {
-  let current: () => Config = () => config
-  let lastRaw: Config | undefined
-  let lastGood: ResolvedNewApiOptions | undefined
-  const options = (): ResolvedNewApiOptions => {
-    const raw = current()
-    if (raw === lastRaw && lastGood !== undefined) return lastGood
-    try {
-      const next = resolveAdapterOptions(raw, launchEnvironmentOf(ctx))
-      lastRaw = raw
-      lastGood = next
-      return next
-    } catch (error) {
-      // Static composition resolves before anything registers, so this branch
-      // only sees a live settings snapshot failing a beyond-schema bound:
-      // keep serving the last good facts and say so once per bad snapshot.
-      if (lastGood === undefined) throw error
-      lastRaw = raw
-      ctx.logger.error(`${PKG}: keeping the last good configuration after an invalid settings section`)
-      ctx.logger.error(error)
-      return lastGood
-    }
-  }
+  // The settings seam on the 0.1.7 line is auto-generated from the plugin's
+  // own `Config` schema with `.volatile()` markers; installSection no longer
+  // exists. `ctx.inject(['settings'], child => child.settings.configure({auto:false}, ctx.fiber))`
+  // declares the per-fiber presentation policy — since the plugin ships its
+  // own settings page in the browser half (NewApiSection), the shell skips
+  // auto-generation of a duplicate form. The `ctx.inject` is conditional:
+  // a host composition without the settings service (test harnesses, headless
+  // boot) leaves the plugin without a settings page, and the adapter keeps
+  // serving requests with whatever the composition entry provided.
+  ctx.inject(['settings'], (child) => {
+    child.effect(() => child.settings.configure({ auto: false }, ctx.fiber))
+  })
+
+  // The settings namespace is now keyed by the profile entry id rather than
+  // an arbitrary "llm-newapi" settings section name: `SettingsForms.describe`
+  // walks `configEditor.configuration()` and projects each entry's
+  // `fiber.runtime.Config`. Fall back to the literal when the fiber carries no
+  // entry (a hand-built composition without Loader), matching upstream
+  // plugins (`llm-pi-ai`, `llm-deepseek`).
+  const settingsNs = ctx.fiber.entry?.options.id ?? NS
+
+  // Each request resolves fresh from the live Volatile references: the loader
+  // commits new values into the running refs in place, so an updated section
+  // reaches the next request without remounting the adapter. The internal/config
+  // waterfall (registered below) refuses unserviceable writes at the profile
+  // patch boundary, so the running refs are always serviceable — keep that
+  // promise simple here and re-validate on every resolve.
+  const options = (): ResolvedNewApiOptions => resolveAdapterOptions(
+    plainOptions(config),
+    launchEnvironmentOf(ctx),
+  )
   options()
+
+  // Refuse an unserviceable section where it is written. The dsh 0.1.7 write
+  // path calls `fiber.ctx.waterfall(fiber, 'internal/config', next, ...)`
+  // before `configEditor.edit` persists the patch, so a throw here refuses
+  // the edit cleanly. Mirrors `llm-pi-ai`'s `assertServiceable` shape:
+  // re-validate the candidate, propagate back to upstream, return the raw.
+  ctx.on('internal/config', function (this: Fiber, _raw, next) {
+    const raw = next() as unknown
+    if (this !== ctx.fiber) return raw
+    // The schema is a StandardSchema: it validates arbitrary input and
+    // returns the typed Config with Volatile refs. `resolveAdapterOptions`
+    // then re-judges the across-field bounds the schema cannot express.
+    resolveAdapterOptions(
+      plainOptions(Config(raw as Parameters<typeof Config>[0]) as Config),
+      launchEnvironmentOf(ctx),
+    )
+    return raw
+  })
 
   const resolveApiKey = async (connection: ResolvedNewApiOptions): Promise<string> => {
     // Every credential fact comes from the caller's snapshot, so a rejected
@@ -424,7 +501,11 @@ export function apply(ctx: Context, config: Config): void {
     {
       provider: PROVIDER,
       displayName: 'NewAPI',
-      settingsNs: NS,
+      // The dsh 0.1.7 models page joins configurable-provider directory entries
+      // with settings namespaces by `settingsNs`. Use the profile entry id so
+      // the join works whether the entry id is `llm-newapi` (the default) or
+      // a renamed one.
+      settingsNs,
       settingsPath: [],
       // The adapter knows this route only because configuration declared it:
       // a self-hosted gateway it ships nothing about.
@@ -449,8 +530,20 @@ export function apply(ctx: Context, config: Config): void {
   // Model discovery for the settings namespace this plugin owns: the Models
   // page interrogates the gateway's /models with the draft's endpoint and
   // one-shot credential, or the current snapshot's facts. The runtime hands
-  // caller cancellation as a separate signal (0.1.5 seam).
-  ctx.llm.registerModelDiscovery(NS, (request, signal) => adapter.discoverModels(request, signal))
+  // caller cancellation as a separate signal (0.1.7 seam).
+  ctx.llm.registerModelDiscovery(settingsNs, (request, signal) => adapter.discoverModels(request, signal))
+
+  // Re-register on live volatile-only updates. The loader emits this event
+  // on the owning fiber after a successful volatile commit (no remount). The
+  // retry policy is the one registration-captured fact that needs a re-bind;
+  // everything else is per-operation, read through the live refs.
+  ctx.on('loader/volatile-update', () => {
+    try { ensureRegistrationFacts() }
+    catch (error) {
+      ctx.logger.error(`${PKG}: failed to refresh registration facts after a volatile update`)
+      ctx.logger.error(error)
+    }
+  })
 
   // Host-side endpoint for the「更新模型信息」action: the browser names
   // the gateway model ids (and optionally the proxy draft) and the host
@@ -460,17 +553,19 @@ export function apply(ctx: Context, config: Config): void {
   //
   // The channel goes through the connection service's own `register(owner,
   // channel, handler)` rather than the `rpc.handle(channel, handler)` the
-  // type advertises. On the 0.1.5 host line `handle` is unusable: its `rpc`
-  // getter captures `this.ctx`, and that captured context is the connection
-  // service's own scope, which has no `webServer` injected. `register` then
-  // evaluates `owner.webServer.register(route)`, cordis answers
-  // `cannot get property "webServer" without inject`, and the throw is
-  // swallowed by the effect — so the channel silently never appears and the
-  // browser meets the SPA fallback's 405 (the boot check catches exactly
-  // this). Passing our own inject-scope context as the owner fixes it, and
-  // `register` is the very method `rpc.handle` delegates to. No upstream
-  // plugin calls `rpc.handle`; `dsh-api-gateway` injects this same
-  // `connection` + `webServer` pair for the work that does touch `webServer`.
+  // type advertises. On the 0.1.7 host line `handle` is still unusable for
+  // the same reason as 0.1.5: its `rpc` getter captures `this.ctx`, and that
+  // captured context is the connection service's own scope, which has no
+  // `webServer` injected. `register` then evaluates `owner.webServer.register(route)`,
+  // cordis answers `cannot get property "webServer" without inject`, and the
+  // throw is swallowed by the effect — so the channel silently never appears
+  // and the browser meets the SPA fallback's 405 (the boot check catches
+  // exactly this). Passing our own inject-scope context as the owner fixes
+  // it, and `register` is the very method `rpc.handle` delegates to. The
+  // private `register` method is no longer part of `HostConnectionHandle` on
+  // 0.1.7; the cast below mirrors the previous 0.1.5 workaround and the
+  // handle signature now receives a fourth `peer` argument that our handler
+  // simply ignores (fewer params is still assignable).
   //
   // Both services are injected so registration waits for each to exist and
   // re-runs if either reloads.
@@ -512,25 +607,5 @@ export function apply(ctx: Context, config: Config): void {
           }))
       },
     ), 'llm-newapi: models-dev RPC channel')
-  })
-
-  // The settings section installs through the `settings` service seam
-  // (0.1.5 seam): the consumer registers while the provider is present and
-  // falls back to the composition entry when it detaches, exactly the
-  // layering the old top-level installSettingsSection helper provided.
-  ctx.inject(['settings'], (settingsCtx) => {
-    settingsCtx.settings.installSection(ctx, NS, Config, config, {
-      // Refuse an unserviceable section where it is written: without this a
-      // schema-valid value the adapter cannot serve (a non-http(s) baseURL,
-      // an empty exclude-pattern entry) stores with a success notice and
-      // then silently keeps the last good facts at every request.
-      validate: (value) => {
-        resolveAdapterOptions(value, launchEnvironmentOf(ctx))
-      },
-      setSource: (source) => {
-        current = source
-      },
-      onChange: ensureRegistrationFacts,
-    })
   })
 }

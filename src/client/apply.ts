@@ -4,7 +4,7 @@
  * own. Zero dsh modifications — the section slot is `kind: 'list'`, built for
  * feature-owned pages ("adding a setting never means editing the shell").
  *
- * Seam (dsh 0.1.5): the browser half mounts as a plain cordis plugin
+ * Seam (dsh 0.1.7): the browser half mounts as a plain cordis plugin
  * module (`inject` + `apply(ctx)`); there is no dedicated client-runtime
  * package anymore, and `ConnectionHandle.api` is gone. Data access rides the
  * typert Remote namespaces (`ctx.remote.settings` / `.credentials` / `.llm`,
@@ -215,12 +215,23 @@ export function apply(ctx: ClientContext): void {
     >
 
   // The section's data face over the typert Remote namespaces: reads and
-  // writes the llm-newapi settings section, the fixed credential reference,
-  // and the gateway model interrogation for this namespace.
+  // writes this plugin's settings namespace, the fixed credential reference,
+  // and the gateway model interrogation for that namespace.
+  //
+  // The namespace id is not necessarily `llm-newapi`: on dsh 0.1.7 the
+  // settings form is keyed by the profile entry id, and the host half
+  // publishes that same id in the configurable-provider directory. Reading it
+  // back keeps the page working for a renamed entry instead of silently
+  // showing "namespace not registered".
   const injected = (): NewApiSectionInjected => ({
     fetchModelParams,
     api: {
       describeSettings: () => ctx.remote.settings.describe(),
+      resolveSettingsNs: async () => {
+        const answer = await ctx.remote.llm.listConfigurableProviders()
+        if (!answer.ok) return NS
+        return answer.value.find((entry: { provider: string; settingsNs: string }) => entry.provider === 'newapi')?.settingsNs ?? NS
+      },
       mutateSettings: (ns, ops, expectedRevision) =>
         ctx.remote.settings.mutate(ns, ops, expectedRevision),
       describeCredentials: (refs) => ctx.remote.credentials.describe(refs),
