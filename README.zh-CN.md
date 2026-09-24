@@ -6,16 +6,18 @@
 
 ## 先选对版本
 
-**宿主版本与插件版本需要配套。** 下表状态核对于 2026-09-11。
+**宿主版本与插件版本需要配套。** 下表状态核对于 2026-09-24。
 
 | dsh 宿主 | 插件版本 | 状态 |
 | --- | --- | --- |
 | `0.1.1-rc.2` | `0.8.4` | 已发布，插件 npm `latest` |
 | `0.1.2-rc.1` | `0.8.6-rc.1` | 已发布，该宿主线的最后一个版本 |
-| `0.1.5-rc.1`、`0.1.5-rc.2` | `0.8.6-rc.2` | 已发布，已被 `0.8.6-rc.3` 取代 |
-| `0.1.5-rc.1`、`0.1.5-rc.2` | **`0.8.6-rc.3`** | **当前版本**；npm `next`，GitHub Pre-release。新增拉取模型时的全选勾选框 |
+| `0.1.5-rc.1`、`0.1.5-rc.2` | `0.8.6-rc.3` | 已发布（npm `next`）；该宿主线的最后一个版本 |
+| **`0.1.7-rc.1`** | **`0.8.6-rc.3` + 本分支** | **未发布**：仓库开发分支已切到 0.1.7 线，等待提 PR 与切新 RC |
 
-`0.8.6-rc.3` 针对 `0.1.5` 宿主线，并会明确拒绝旧的 `0.1.2-rc.1` 宿主并提示升级；`0.1.2-rc.1` 用户继续使用插件 `0.8.6-rc.1`。`0.1.5-rc.1` 与 `0.1.5-rc.2` 都已验证：两者发布的 `lib/**` 代码逐字节一致，插件在任一版本下构建出的产物也完全相同。详见[适配评估](docs/2026-09-10-dsh-0.1.5-rc.1-assessment.md)。
+本分支（`adapt-dsh-0.1.7-rc.1`）把插件改成**只支持 dsh `0.1.7` 线**：`0.1.7` 删除了旧的 `settings.installSection` 接缝，改为「Config 字段声明 `.volatile()` + 插件直接读引用 + `loader/volatile-update`」，两者无法共用一份代码。`0.1.5` 及更早的宿主会被明确拒绝并提示升级。
+
+因此 npm 上已发布的 `0.8.6-rc.3` 与仓库当前分支是两套宿主目标：**已发布的 `0.8.6-rc.3` 面向 `0.1.5` 线；本分支的源码面向 `0.1.7` 线**。在源项目切出新的 RC 之前，`0.1.7-rc.1` 用户请从本仓库分支构建。详见 [0.1.7 适配评估](docs/2026-09-24-dsh-0.1.7-rc.1-assessment.md)。
 
 版本一律走**预发布通道**：npm `next` 加 GitHub Pre-release。这里不会晋升正式版，也不会移动插件的 `latest`（仍为 `0.8.4`）。不要假设 dsh 与插件各自的 `latest` 能配套使用。
 
@@ -41,9 +43,7 @@ dsh plugin --profile web add --save-exact dsh-llm-newapi@0.8.4
 
 选择一组执行即可。`--save-exact` 将插件依赖记录为精确版本，避免后续依赖更新时自动切换版本。插件安装使用 `dsh plugin`，它会管理对应 profile；单独全局安装 `dsh-llm-newapi` 不会完成这个步骤。
 
-### 新宿主组合：仅在 rc.2 发布后执行
-
-**目前 rc.2 尚未发布，下面是预定安装命令。** 发布后可先查询该版本，再执行安装：
+### 已发布的 0.1.5 组合
 
 ```sh
 npm view dsh-llm-newapi@0.8.6-rc.3 version
@@ -52,11 +52,27 @@ npm install -g pnpm
 dsh plugin --profile web add --save-exact dsh-llm-newapi@0.8.6-rc.3
 ```
 
+### dsh `0.1.7-rc.1`（本分支，尚未发布 npm 包）
+
+`0.8.6-rc.3` 的 npm 包只面向 `0.1.5` 线，装载到 `0.1.7` 宿主上会在启动时被插件的宿主线检查拒绝。在源项目切出新的 RC 之前，先在本仓库构建：
+
+```sh
+git clone https://github.com/skywolf123/dsh-llm-newapi
+cd dsh-llm-newapi
+git checkout adapt-dsh-0.1.7-rc.1
+npm install && npm run build
+npm install -g @deepseek-ai/dsh@0.1.7-rc.1
+npm install -g pnpm
+dsh plugin --profile web add "$(pwd)"
+```
+
+新 RC 发布后，把最后一行换成对应的 `--save-exact dsh-llm-newapi@<版本>` 即可。
+
 ### 确认插件已启用
 
 检查 `$DSH_HOME/profiles/web/package.json`；未设置 `DSH_HOME` 时，默认在用户目录的 `.dsh/profiles/web/package.json`。
 
-在 `dsh.profile.bundles` 数组中确认包含 `dsh-llm-newapi`。新版 dsh `0.1.5` 会自动登记声明了 bundle 的插件；旧版或已有 profile 若缺少该项，手动追加一次，保留其他项。以下只是需要检查的 JSON 片段，**不要覆盖整个文件**：
+在 `dsh.profile.bundles` 数组中确认包含 `dsh-llm-newapi`。新版 dsh `0.1.5` 及以后的版本会自动登记声明了 bundle 的插件；旧版或已有 profile 若缺少该项，手动追加一次，保留其他项。以下只是需要检查的 JSON 片段，**不要覆盖整个文件**：
 
 ```json
 {
@@ -105,15 +121,16 @@ dsh web
 
 升级前先核对版本表，停止正在运行的 dsh Web，并备份自己的 dsh 配置及会话数据。安装目标宿主和指定插件版本后，保留原有 bundle 项并重新启动；插件继续使用原来的 `llm-newapi` 设置段和 `newapi` 凭据引用。
 
-上游 dsh `0.1.5` 会迁移会话格式，迁移后的会话不能由旧宿主直接读取。退回旧宿主时不能只更换 npm 版本，需参考[上游迁移说明](https://github.com/deepseek-ai/deepseek-harness/blob/dsh-v0.1.5-rc.1/packages/session/session-format-v2-to-v3/README.zh.md)。
+上游 dsh 从 `0.1.5` 起会迁移会话格式，`0.1.7` 又升级到 Session V4，迁移后的会话不能由旧宿主直接读取。退回旧宿主时不能只更换 npm 版本，需参考[上游 V3→V4 迁移说明](https://github.com/deepseek-ai/deepseek-harness/blob/dsh-v0.1.7-rc.1/packages/session/session-format-v3-to-v4/README.md)。
 
 | 问题 | 先检查 |
 | --- | --- |
 | 设置里没有 NewAPI | 是否安装在 `web` profile、bundle 是否登记、是否已重启、宿主版本是否配套 |
+| 启动报 `requires dsh >= 0.1.7-rc.1` | 宿主版本低于本分支支持的下限；装回 `0.8.6-rc.3`（面向 `0.1.5`）或升级宿主 |
 | 提示缺少密钥 | 在 NewAPI 设置页填写并保存；插件不读取 `NEWAPI_API_KEY` |
 | 无法获取模型 | 地址是否包含 `/v1`，密钥是否可用，网关是否支持 `/models` |
 | 模型列表为空 | 网关返回的模型是否被名称过滤；可手动添加确认支持 chat-completions 的模型 |
-| models.dev 下载失败 | 检查网络和代理；设置页的代理仅覆盖该目录下载，dsh `0.1.5` 还会应用宿主环境代理 |
+| models.dev 下载失败 | 检查网络和代理；设置页的代理仅覆盖该目录下载，dsh `0.1.7` 还会应用宿主环境代理 |
 | 安装出现 missing peer 警告 | dsh 会提供宿主依赖；若安装和启动成功，不必为这些提示补装另一套宿主包。实际启动错误需另行排查 |
 
 ## 进一步阅读
@@ -121,5 +138,6 @@ dsh web
 - [配置与排障](docs/configuration.md)：配置字段、模型参数匹配、代理与保存失败处理。
 - [开发与 RC 发布](docs/development.md)：本地构建、测试范围和发布前检查。
 - [实现设计](DESIGN.md)：代码入口、数据流和关键设计决策。
-- [0.1.5-rc.1 适配评估](docs/2026-09-10-dsh-0.1.5-rc.1-assessment.md)：版本盘点和尚待完成的工作。
+- [0.1.7-rc.1 适配评估](docs/2026-09-24-dsh-0.1.7-rc.1-assessment.md)：接缝变更清单、验证范围与本分支的发布状态。
+- [0.1.5-rc.1 适配评估](docs/2026-09-10-dsh-0.1.5-rc.1-assessment.md)：上一轮适配的历史记录。
 - [发布记录](https://github.com/wenzetan/dsh-llm-newapi/releases)：已发布版本的变更和下载附件。

@@ -8,47 +8,42 @@
 
 | 内容 | 保存方式 |
 | --- | --- |
-| 网关地址、模型列表、models.dev 代理 | dsh 设置的 `llm-newapi` 段 |
+| 网关地址、模型列表、models.dev 代理 | profile 补丁中 `llm-newapi` 条目 `config` 下的 `.volatile()` 字段 |
 | API 密钥 | dsh credentials store，固定引用名 `newapi` |
 | 插件启用状态 | web profile 的 `package.json` → `dsh.profile.bundles` |
 
-Web 设置会覆盖插件启动配置中的对应字段，保存后后续请求使用新值；正在进行的请求继续使用启动该请求时的配置。密钥不写入下方 YAML，也不通过 `NEWAPI_API_KEY` 读取。
+dsh `0.1.7` 起，设置页编辑的是当前 profile 里这个插件条目的配置，写入落到 profile 补丁（`dsh.profile` 对应的 patch 文件）。保存后后续请求使用新值；正在进行的请求继续使用启动该请求时的配置。密钥不写入下方 YAML，也不通过 `NEWAPI_API_KEY` 读取。
 
 ## 手动配置示例
 
-下面是 **settings.yaml 中的设置段**。编辑自己所用 dsh 实例的设置文件，并保留其他设置段。多数用户使用 Web 设置页即可，无需手动改文件。
+推荐直接使用 Web 设置页。需要手写配置时，把下面这些字段放在插件条目的 `config` 下。
 
-```yaml
-llm-newapi:
-  baseURL: https://your-gateway.example/v1
-  models:
-    - id: your-chat-model
-      name: 我的对话模型
-      contextWindow: 128000
-      maxTokens: 8192
-  modelExcludePatterns:
-    - embed
-    - rerank
-    - ranker
-  defaultContextWindow: 128000
-  streamIdleTimeoutMs: 300000
-  proxy:
-    enabled: false
-    url: http://127.0.0.1:7890
-```
-
-请将模型 ID 与容量替换为网关实际值。这里的 `your-chat-model` 仅为示例。
-
-若通过自定义 Cordis 启动配置提供默认值，将上述 `llm-newapi` 下的字段放在插件行的 `config` 中：
+dsh 曾经使用独立的 `settings.yaml`：`0.1.7` 已改为「设置就是 profile 里该插件条目的 config」，旧的 `settings.yaml` 只会被导入一次并重命名为 `settings.yaml.imported`。因此**不要再**往 `settings.yaml` 里新增段落。
 
 ```yaml
 - id: llm-newapi
   name: dsh-llm-newapi
   config:
     baseURL: https://your-gateway.example/v1
+    models:
+      - id: your-chat-model
+        name: 我的对话模型
+        contextWindow: 128000
+        maxTokens: 8192
+    modelExcludePatterns:
+      - embed
+      - rerank
+      - ranker
+    defaultContextWindow: 128000
+    streamIdleTimeoutMs: 300000
+    proxy:
+      enabled: false
+      url: http://127.0.0.1:7890
 ```
 
-已有 bundle 会插入这条插件行，不要为了填配置再重复加载一次插件。
+请将模型 ID 与容量替换为网关实际值。这里的 `your-chat-model` 仅为示例。
+
+已有 bundle 会插入这条插件行，不要为了填配置再重复加载一次插件。所有字段都是可选的：`baseURL` 缺失时回退到受信启动环境的 `NEWAPI_BASE_URL`，再回退到占位地址。
 
 ## 字段速查
 
@@ -64,6 +59,8 @@ llm-newapi:
 | `proxy.url` | `http://127.0.0.1:7890` | models.dev 使用的 HTTP 代理地址 |
 | `providerHints` | 内置家族匹配规则 | 调整 models.dev 参数匹配的数据来源，见下文 |
 | `retryPolicy` | 宿主默认策略 | 使用对应宿主版本 `RetryPolicySchema` 定义的字段 |
+
+所有字段都声明为 `.volatile()`：只有这些字段会出现在设置页表单里，也只有它们能在不重启插件的情况下热更新。解析失败或不可服务的候选值会被插件的 `internal/config` 校验拒绝，运行中的引用保持上一次可用值。
 
 每个模型必须有唯一且非空的 `id`，可选字段为 `name`、`description`、`contextWindow`、`maxTokens`、`reasoningEfforts`、`defaultReasoningEffort`。容量必须为正整数。Web 容量输入框支持 `128K`、`1M`（分别为 128000、1000000），YAML 使用整数。
 
@@ -101,15 +98,15 @@ defaultReasoningEffort: medium
 | 设置 | 影响范围 |
 | --- | --- |
 | 插件设置页中的代理 | 显式覆盖 models.dev 参数下载，不直接改动网关请求的代理配置 |
-| dsh `0.1.5` 的启动环境代理 | 宿主通过全局 dispatcher 路由普通 fetch，包括网关请求及未指定插件代理的 models.dev 下载 |
+| dsh `0.1.7` 的启动环境代理 | 宿主通过全局 dispatcher 路由普通 fetch，包括网关请求及未指定插件代理的 models.dev 下载 |
 
-因此，“关闭插件代理”不等于强制直连。新版宿主仍可能依据 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY`、`NO_PROXY` 路由请求，详见[上游代理说明](https://github.com/deepseek-ai/deepseek-harness/blob/dsh-v0.1.5-rc.1/packages/util/http-proxy/README.zh.md)。设置页已把这一点写在代理开关下方；下载失败时插件也不再声称走的是直连路径，而是提示检查到 models.dev 的网络路径，或为本插件单独配置代理。
+因此，“关闭插件代理”不等于强制直连。新版宿主仍可能依据 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY`、`NO_PROXY` 路由请求，详见[上游代理说明](https://github.com/deepseek-ai/deepseek-harness/blob/dsh-v0.1.7-rc.1/packages/util/http-proxy/README.zh.md)。设置页已把这一点写在代理开关下方；下载失败时插件也不再声称走的是直连路径，而是提示检查到 models.dev 的网络路径，或为本插件单独配置代理。
 
 ## 常见故障
 
 ### 保存失败或配置看起来没有更新
 
-先查看设置页的具体错误。空 ID、重复 ID、非法地址和错误的容量值都会被拒绝。设置修改基于读取时的 revision；如果配置同时在别处变更，重新加载后再编辑。
+先查看设置页的具体错误。空 ID、重复 ID、非法地址和错误的容量值都会被拒绝——非法地址与非法代理 URL 由宿主端 `internal/config` 校验直接拒绝，因此**不会**出现「保存成功但请求仍走旧地址」的情况。设置修改基于读取时的 revision；如果配置同时在别处变更，重新加载后再编辑。
 
 地址、模型等设置与密钥分两步保存，不是一个事务。如果密钥保存失败，其他设置可能已经写入；修复密钥问题后重试即可，不要据此判断所有修改都已回滚。
 
@@ -120,5 +117,7 @@ defaultReasoningEffort: medium
 ### 请求失败、超时或工具调用出错
 
 检查网关是否提供 `/chat/completions`，模型 ID 是否准确，以及该模型是否支持工具调用和所选思考等级。HTTP 429 常与限流有关，5xx 常与网关或上游有关；流长时间没有数据时会触发空闲超时。
+
+`UNSUPPORTED_CONTENT` 表示这次请求带了 chat-completions 线无法表达的内容：图片、`role: 'developer'` 历史、`tool-addition` / `tool-removal` 内容块，或声明了 `deferLoading` 的工具。前四者属于 dsh `0.1.7` 新增的 Session V4 词表，网关侧没有对应表示；插件选择明确报错而不是静默丢弃。
 
 反馈问题时附上 dsh 版本、插件版本、失败操作、模型 ID 和脱敏后的错误。不要附 API 密钥或 Web 启动链接中的认证 token。
