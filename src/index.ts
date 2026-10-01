@@ -51,7 +51,7 @@ export { serializeRequest } from './serialize.ts'
 export type { NewApiAdapterOptions, NewApiCatalogModel, NewApiConnectionOptions } from './adapter.ts'
 export type * from './types.ts'
 
-const MINIMUM_DSH_VERSION = '0.1.7-rc.1'
+const MINIMUM_DSH_VERSION = '0.2.0-rc.1'
 
 type SemverIdentifier = number | string
 interface ParsedSemver {
@@ -590,35 +590,20 @@ export function apply(ctx: Context, config: Config): void {
   // the browser, and a plain HTTP forward proxy works because Node performs
   // the request.
   //
-  // The channel goes through the connection service's own `register(owner,
-  // channel, handler)` rather than the `rpc.handle(channel, handler)` the
-  // type advertises. On the 0.1.7 host line `handle` is still unusable: its
-  // `rpc` getter captures `this.ctx`, and that captured context is the
-  // connection service's own scope, which has no `webServer` injected.
-  // `register` then evaluates `owner.webServer.register(route)`, cordis
-  // answers `cannot get property "webServer" without inject`, and the throw is
-  // swallowed by the effect — so the channel silently never appears and the
-  // browser meets the SPA fallback's 405 (the boot check catches exactly
-  // this). Passing our own inject-scope context as the owner fixes it, and
-  // `register` is the very method `rpc.handle` delegates to. No upstream
-  // plugin calls `rpc.handle`; `dsh-api-gateway` injects this same
-  // `connection` + `webServer` pair for the work that does touch `webServer`.
+  // The channel mounts through the connection service's public
+  // `rpc.handle(channel, handler)` — the shape `HostConnectionHandle`
+  // advertises on the dsh 0.2.0 line. The 0.1.7 workaround (passing our own
+  // inject scope as an owner to a private `register`) is gone with the
+  // method: upstream made the service itself depend on `webServer`, so the
+  // registry runs every `handle` call inside a scope that already has the
+  // route table, and the channel installs without this plugin threading a
+  // context through. No `as unknown as` cast remains.
   //
   // Both services are injected so registration waits for each to exist and
   // re-runs if either reloads.
   ctx.inject(['connection', 'webServer'], (cctx) => {
     const connection = cctx.get('connection') as HostConnectionHandle
-    // The owner-taking overload is on the service prototype but not on
-    // `HostConnectionHandle`, so the extra shape is declared here.
-    const registrar = connection as unknown as {
-      register(
-        owner: unknown,
-        channel: string,
-        handler: (endpoint: string, payload: unknown, signal: AbortSignal) => Promise<unknown>,
-      ): () => Promise<void>
-    }
-    cctx.effect(() => registrar.register(
-      cctx,
+    cctx.effect(() => connection.rpc.handle(
       '/llm-newapi',
       (endpoint: string, payload: unknown, signal: AbortSignal) => {
         if (endpoint !== 'models-dev-params') {
@@ -646,7 +631,7 @@ export function apply(ctx: Context, config: Config): void {
     ), 'llm-newapi: models-dev RPC channel')
   })
 
-  // Settings presentation policy (0.1.7 seam): configuration now projects
+  // Settings presentation policy (0.1.7 seam, unchanged on 0.2.0): configuration now projects
   // from this plugin's own profile entry, whose Config schema marks every
   // field volatile — the Loader commits a volatile-only edit into the running
   // references, and the write point validates the full Config before

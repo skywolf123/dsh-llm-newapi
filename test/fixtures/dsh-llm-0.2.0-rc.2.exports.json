@@ -1,11 +1,11 @@
 {
-  "capturedFrom": "0.1.7-rc.1",
-  "version": "0.1.7-rc.2",
+  "capturedFrom": "0.2.0-rc.2",
   "surfaceSharedBy": [
-    "0.1.7-rc.1",
-    "0.1.7-rc.2"
+    "0.2.0-rc.1",
+    "0.2.0-rc.2"
   ],
   "exports": [
+    "ACCOUNT_QUOTA_EXCEEDED_CODE",
     "APP_IDENTITY",
     "AssistantStreamAccumulator",
     "BlockAssembler",
@@ -61,6 +61,7 @@
     "projectFilesToText",
     "projectImagesForTextModel",
     "projectOffloadedImages",
+    "projectToolUpdates",
     "requestImageHandleText",
     "requiredImageOffload",
     "resolveImageAttachmentAccess",
