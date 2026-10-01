@@ -94,7 +94,7 @@ defaultReasoningEffort: medium
 | 插件设置页中的代理 | 显式覆盖 models.dev 参数下载，不直接改动网关请求的代理配置 |
 | dsh 的启动环境代理 | 宿主通过 `dsh-http-proxy` 安装全局 dispatcher 路由普通 fetch，包括网关请求及未指定插件代理的 models.dev 下载 |
 
-因此，“关闭插件代理”不等于强制直连。新版宿主仍可能依据 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY`、`NO_PROXY` 路由请求，详见[上游代理说明](https://github.com/deepseek-ai/deepseek-harness/blob/dsh-v0.1.7-rc.1/packages/util/http-proxy/README.zh.md)。设置页已把这一点写在代理开关下方；下载失败时插件也不再声称走的是直连路径，而是提示检查到 models.dev 的网络路径，或为本插件单独配置代理。
+因此，“关闭插件代理”不等于强制直连。dsh 0.2.0 宿主仍可能依据 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY`、`NO_PROXY` 路由请求，详见[上游代理说明](https://github.com/deepseek-ai/deepseek-harness/blob/dsh-v0.2.0-rc.2/packages/util/http-proxy/README.zh.md)。设置页已把这一点写在代理开关下方；下载失败时插件也不再声称走的是直连路径，而是提示检查到 models.dev 的网络路径，或为本插件单独配置代理。
 
 ## 常见故障
 
@@ -113,3 +113,13 @@ defaultReasoningEffort: medium
 检查网关是否提供 `/chat/completions`，模型 ID 是否准确，以及该模型是否支持工具调用和所选思考等级。HTTP 429 常与限流有关，5xx 常与网关或上游有关；流长时间没有数据时会触发空闲超时。
 
 反馈问题时附上 dsh 版本、插件版本、失败操作、模型 ID 和脱敏后的错误。不要附 API 密钥或 Web 启动链接中的认证 token。
+
+### 宿主版本过低 / 通道不可用
+
+启动报 `dsh-llm-newapi requires dsh >= 0.2.0-rc.1` 表示宿主的 `@deepseek-ai/dsh-llm` 低于本插件的下限：0.2.0 线把自有 RPC 通道的注册换成了公开的 `connection.rpc.handle`，0.1.7 及更早宿主没有这个接缝。按提示升级宿主即可：
+
+```sh
+npm install -g @deepseek-ai/dsh@0.2.0-rc.1
+```
+
+如果必须留在 0.1.7 或 0.1.5 线，请改装与该宿主线配套的已发布插件版本（详见 [README 版本表](../README.zh-CN.md#先选对版本)）。自有 RPC 通道（models.dev 参数查询）在 0.2.0 线上由 Connection 服务自行完成 `webServer` 注册；通道未挂上时浏览器会撞上 SPA fallback 的 405，此时先确认插件版本与宿主线配套、以及 Web 是否已重启。
