@@ -2,138 +2,113 @@
 
 **English** | [中文](README.zh-CN.md)
 
-Use your NewAPI gateway in [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (dsh). The plugin adds a **NewAPI settings page** for credentials, model discovery and model parameters, plus streaming text and tool calls. It requires no changes to dsh.
+> **This project is archived and no longer maintained.**
+>
+> dsh 0.2.0 ships a native **Custom Provider** feature that covers what this plugin did, and third-party plugins now fill the remaining gap on top of it. New users should not install this plugin. Existing users should migrate — see [Migration](#migration) below.
 
-## Choose a compatible version
+## Why this project is archived
 
-**Install the host and plugin as a pair.** Status checked on September 24, 2026.
+When this plugin was written, DeepSeek Harness had no way to point the model layer at an arbitrary OpenAI-compatible gateway: you needed a plugin that registered its own provider route, discovered models over `/models`, and shipped a settings page. That is what `dsh-llm-newapi` did for NewAPI gateways.
 
-| dsh host | Plugin version line | npm channel | Status |
-| --- | --- | --- | --- |
-| `0.1.5-rc.3` | `0.1.5-rc.3-v0.3` | — | Published, that line is frozen |
-| **`0.1.7-rc.1`** | **`0.1.7-rc.1-v0.x`** | **`latest`** | **Current promoted line** |
+That gap has closed. dsh 0.2.0 added the native **Custom Provider** feature (**Settings → Models → Add model provider → Custom model API**), which lets you declare a provider — endpoint, API protocol, credential, and models — without installing anything. For the NewAPI use case it now covers, and in most respects exceeds, what this plugin offered:
 
-On a host line only the last segment increments (`-v0.1` → `-v0.2` → …), so the promoted line is named as `v0.x`. Query the exact version each channel currently points at:
+| Capability | dsh-llm-newapi | Native Custom Provider (dsh 0.2.0) |
+| --- | --- | --- |
+| Custom gateway endpoint + API key | Yes | Yes |
+| Model discovery via `/models` | Yes, filtering `embed`/`rerank`/`ranker` | Yes, unfiltered |
+| Multiple gateways | No — one fixed `newapi` route | Yes, one route per provider |
+| Wire protocols | Chat Completions only | Chat Completions, Responses, Anthropic Messages |
+| Image input | No — declares text-only | Yes, per model |
+| Reasoning effort | Yes | Yes, with wire-value mapping and DeepSeek `thinkingFormat` |
+| Request compatibility switches | No | Yes (`compat.*`) |
+| models.dev parameter auto-fill | Yes | No |
 
-```sh
-npm view dsh-llm-newapi dist-tags --json
-```
+Two things this plugin offered have no direct native equivalent: **automatic model-parameter fill from models.dev**, and a **review-and-confirm step before parameters are written**. Both are now provided by third-party plugins that patch the native Custom Provider rather than replacing it — which is a far better place for them, because they follow the host's release cadence instead of pinning to a pre-1.0 adapter seam.
 
-### Version scheme
+Rather than keep maintaining a parallel adapter against a moving seam, this repository is archived in favor of the native feature plus the plugins below.
 
-The plugin version follows the upstream host: `<dsh version>-v<plugin revision>`. Only the last segment is this plugin's own revision:
+## Alternatives
 
-| Case | dsh version | Plugin version (npm) | Git tag / Release |
-| --- | --- | --- | --- |
-| Upstream RC | `0.1.7-rc.1` | `0.1.7-rc.1-v0.1` | `v0.1.7-rc.1-v0.1` |
-| Later plugin change on the same host line | `0.1.7-rc.1` | `0.1.7-rc.1-v0.2` | `v0.1.7-rc.1-v0.2` |
-| Upstream stable | `0.1.7` | `0.1.7-v0.1` | `v0.1.7-v0.1` |
-| Host line changes (revision restarts) | `0.1.7-rc.2` | `0.1.7-rc.2-v0.1` | `v0.1.7-rc.2-v0.1` |
+All four are plugins that fill in native Custom Provider profiles — they write into the `llm-pi-ai` settings namespace and let the native adapter do the talking. None of them replaces dsh.
 
-- npm forbids a leading `v` in the version field, so the package reads `0.1.7-rc.1-v0.1` while the Git tag and GitHub Release use `v0.1.7-rc.1-v0.1`.
-- **Channel split**: npm `latest` points at the currently promoted host line (the 0.1.7 line today); `next` is reserved for other lines or future previews. Promoting or switching a line is a one-line change (`LATEST_LINE` in CI); a stable `0.1.7` tag (`v0.1.7-v0.x`) also lands on `latest`.
-- The older **`0.8.x` series** (dsh `0.1.1-rc.2` / `0.1.2-rc.1` host lines) had its tags removed and is marked deprecated on npm.
+### [dsh-model-fix](https://github.com/TikaFlow/dsh-model-fix) — recommended
 
-### Compatibility and upgrades
+The most complete and the most actively maintained of the four.
 
-Plugin `0.1.7-rc.1-v0.x` supports the **dsh `0.1.7-rc.1` line** and rejects the `0.1.5` host with an explicit upgrade message; `0.1.5-rc.3` users run `0.1.5-rc.3-v0.3`. Compatibility is keyed to the host line rather than one patch: a later `0.1.7-rc` cut is covered as long as its export surface matches — `npm run test:host` compares the installed surface against the checked-in one and fails loudly when it does not, instead of assuming. `0.1.7` replaced the settings architecture (plugin configuration now projects from the profile patch with volatile fields), so this is not a pure dependency bump: see the [compatibility assessment (Chinese)](docs/2026-09-24-dsh-0.1.7-rc.1-assessment.md).
-
-Both lines are GitHub Pre-releases (the plugin has no stable release yet). The host and plugin use `latest` with different meanings, so do not assume they pair — pick a host line from the table and query `dist-tags` for the exact version.
-
-## Install exact versions
-
-You need Node.js, npm and pnpm. Repository CI uses Node.js 24. Install the host with npm, then install the plugin from the npm registry into dsh's `web` profile.
-
-### Current promoted pair (dsh `0.1.7-rc.1`, npm `latest`)
+- Auto-fills `reasoningEfforts`, `contextWindow`, `maxTokens`, and `input` (image modalities) from [models.dev](https://models.dev), for custom provider models only.
+- Ships an **offline cache**, so it works without network at startup and refreshes in the background.
+- Also writes `compat.supportsDeveloperRole: false` on `openai-completions` routes — the fix for the common "only reasoning models fail" gateway rejection.
+- Settings card with draft/edit/save, **force update**, **restore backup**, and a **provider exclusion list**; dangerous writes are behind a confirmation dialog.
+- Remembers the reasoning level per model and restores it when you switch models; optional "default to `high`".
+- Supports dsh `0.1.2-rc.1` through `0.2.0-rc.2`, with a substantial test suite.
 
 ```sh
-npm install -g @deepseek-ai/dsh@0.1.7-rc.1
-npm install -g pnpm
-dsh plugin --profile web add --save-exact "dsh-llm-newapi@$(npm view dsh-llm-newapi dist-tags.latest)"
+dsh plugin --profile web add https://github.com/TikaFlow/dsh-model-fix/releases/latest/download/dsh-model-fix.tgz
 ```
 
-### Previous host pair (dsh `0.1.5-rc.3`, that line is frozen)
+### [dsh-model-extension](https://github.com/lovezi0/dsh-model-extension)
 
-```sh
-npm install -g @deepseek-ai/dsh@0.1.5-rc.3
-npm install -g pnpm
-dsh plugin --profile web add --save-exact dsh-llm-newapi@0.1.5-rc.3-v0.3
-```
+The most aggressive option: it **replaces** the official Models page with its own "Models+" page, where `reasoningEfforts`, `input`, and `compat` are editable per model in a form, plus models.dev prefill.
 
-Choose one pair. The promoted pair resolves the current version through `dist-tags`, so no version needs to be copied by hand; the 0.1.5 line is frozen at `0.1.5-rc.3-v0.3`. `--save-exact` records an exact plugin dependency so a later dependency update does not switch versions automatically. Use `dsh plugin` to manage the profile; installing `dsh-llm-newapi` globally by itself does not register it there.
+- Use it if you want a UI for the fields the native page deliberately leaves to YAML.
+- Trade-off: it disables the official `ui-settings-models` entry via a bundle patch. If a future dsh release renames that entry, the patch silently stops matching and the official page returns — it needs re-checking against adapter-anchor bumps. It also removes the official onboarding components that live in that package.
 
-### Check that the plugin is enabled
+### [dsh-model-info-fill](https://github.com/11zld22/dsh-model-info-fill)
 
-Open `$DSH_HOME/profiles/web/package.json`. With no `DSH_HOME` override, this is `.dsh/profiles/web/package.json` under your home directory.
+A middle ground: fills `contextWindow`, `maxTokens`, `reasoningEfforts`, and `input` from models.dev, with configurable defaults for models the catalog does not match, and a "default effort" option (which covers the native per-route `reasoning` gap).
 
-Ensure `dsh.profile.bundles` contains `dsh-llm-newapi`. Recent dsh hosts register installed bundle plugins automatically. On an older host or an existing profile where the entry is missing, append it once and preserve the other entries. This is a JSON fragment to check, **not a replacement for the entire file**:
+- Smaller and simpler than the two above; interfaces with both the dsh 0.1.6 and 0.1.7 settings surfaces.
+- Verify 0.2.0 support yourself before relying on it — its README still targets 0.1.6/0.1.7.
 
-```json
-{
-  "dsh": {
-    "profile": {
-      "bundles": [
-        "@deepseek-ai/dsh-base",
-        "@deepseek-ai/dsh-web-app",
-        "dsh-llm-newapi"
-      ]
-    }
-  }
-}
-```
+### [dsh-models-dev-reasoning](https://github.com/aerince/dsh-models-dev-reasoning)
 
-Check the installed versions, then restart dsh Web:
+The most minimal: a single zero-build `index.js` that writes only `reasoningEfforts` for models that do not already declare it. No UI, no configuration.
 
-```sh
-dsh --version
-dsh plugin --profile web list dsh-llm-newapi
-dsh web
-```
+- Use it if reasoning levels are the only thing you want filled in and you do not want a settings card.
+- Last updated 2026-08-15; the least maintained of the four.
 
-## First use
+### Comparison
 
-1. Open **NewAPI** in dsh Web settings.
-2. Enter your gateway URL, such as `https://your-gateway.example/v1`, and API key. Include `/v1`; do not enter the full `/chat/completions` path.
-3. Click **Fetch models**, select the models you need and add the selected entries.
-4. Optionally fetch model information from models.dev. Review context limits, output limits and reasoning efforts before applying values.
-5. Click **Save**, then choose a model under the `newapi` provider in the conversation model picker.
+| | dsh-model-fix | dsh-model-extension | dsh-model-info-fill | dsh-models-dev-reasoning |
+| --- | --- | --- | --- | --- |
+| Reasoning efforts | Yes | Yes | Yes | Yes |
+| Context / max tokens | Yes | Yes | Yes | No |
+| Image modalities | Yes | Yes | Yes | No |
+| `compat` switches | Yes | Yes | No | No |
+| Settings UI | Yes | Yes | Yes | No |
+| User confirmation | Draft + save, backup/restore | Per-row form + save | Toggle + button | None (silent) |
+| Data source | models.dev + offline cache | `models.json` (download yourself) | models.dev | models.dev, GitHub fallback |
+| Official Models page | Kept | **Replaced** | Kept | Kept |
+| dsh support | 0.1.2-rc.1 – 0.2.0-rc.2 | 0.1.7 – 0.2.0 | 0.1.6 / 0.1.7 | Not stated |
 
-Model discovery queries your gateway for available models. models.dev is a public parameter catalog; a match does not establish that your gateway supports a model or feature. Save after applying catalog values.
+## Migration
 
-## Capabilities and limits
+**Recommendation: migrate to the native Custom Provider, and add [dsh-model-fix](https://github.com/TikaFlow/dsh-model-fix) if you relied on the models.dev parameter fill.**
 
-| Feature | Behavior |
-| --- | --- |
-| Text, reasoning content and tool calls | Streaming supported; an explicit reasoning effort is sent as `reasoning_effort` |
-| Image input | The adapter currently declares text-only input |
-| Model discovery | Queries `/models` and filters names containing `embed`, `rerank` or `ranker`; this is not a capability probe |
-| Model parameters | Edit manually or match against models.dev; verify against your gateway |
-| API key | Saved through settings, never echoed; a blank input preserves the stored key |
-| Multiple gateways | One `newapi` route and one gateway configuration are currently supported |
+- **Full guide: [Migrating from dsh-llm-newapi](docs/migrating-from-dsh-llm-newapi.md)** — field-by-field mapping (`llm-newapi` → `llm-pi-ai`), the reasoning-effort structure change, and validation steps.
+- Native Custom Provider reference: [Configure models](https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/user/guide/providers.md).
 
-## Upgrading and troubleshooting
+The short version:
 
-Check the version table, stop dsh Web and back up your dsh configuration and session data before upgrading. Install the target host and exact plugin version, keep the existing bundle entry and restart. The plugin retains the `newapi` credential reference; configuration now persists through the profile's Cordis patch (see [configuration](docs/configuration.md)).
+1. Upgrading to dsh 0.2.0+ gives you the native feature; no plugin needed for the gateway itself.
+2. Create a custom provider with your base URL, `openai-completions` protocol, key, and models.
+3. Map the old fields by hand — or install `dsh-model-fix` and let it fill the parameters.
+4. Remove this plugin once the new route works.
 
-Host `0.1.7` migrates sessions from V3 to V4 (tool results become tool-role messages, message sources are renamed); older hosts cannot directly read migrated sessions. Reinstalling an older npm version alone is not a complete rollback. See the [upstream migration guide](https://github.com/deepseek-ai/deepseek-harness/blob/dsh-v0.1.7-rc.1/packages/session/session-format-v3-to-v4/README.md).
+Two things that do not carry over automatically and need attention:
 
-| Symptom | Check first |
-| --- | --- |
-| No NewAPI settings page | The `web` profile, bundle entry, host compatibility and whether Web was restarted |
-| Missing credential | Enter and save the key in NewAPI settings; the plugin does not read `NEWAPI_API_KEY` |
-| Discovery fails | The `/v1` base URL, API key and gateway support for `/models` |
-| Empty model list | Name-based filtering; manually add a model only if it supports chat-completions |
-| models.dev download fails | Network and proxy settings; the plugin proxy applies to this download, while dsh also applies environment proxy settings through `dsh-http-proxy` |
-| Missing-peer warnings during install | dsh supplies host packages. If installation and startup succeed, do not install duplicate host packages just to silence these warnings; investigate actual startup errors separately |
+- **Reasoning efforts change shape.** The old string array `reasoningEfforts: [low, medium, high]` becomes a mapping whose values are wire spellings (`low: low, …`), and the old model-level `defaultReasoningEffort` becomes the native route-level `reasoning:`. `dsh-model-fix` writes the new shape for you; the mapping table in the migration guide covers the manual path.
+- **Your API key must be re-entered.** The old key lived in the credentials store under the `newapi` reference; the native provider uses its own reference, and the key is never echoed back by either page.
 
-## Documentation
+## Historical documentation
 
-The detailed guides below are currently in Chinese:
+The documents below describe the plugin as it was, and are kept for reference. They are accurate as of the versions they name and are no longer updated.
 
 - [Configuration and troubleshooting](docs/configuration.md): fields, model matching, proxies and save failures.
 - [Development and RC releases](docs/development.md): builds, test coverage and release checks.
 - [Design](DESIGN.md): source map, data flow and implementation decisions.
-- [0.1.7-rc.1 assessment](docs/2026-09-24-dsh-0.1.7-rc.1-assessment.md): version inventory, breaking changes and verification.
+- [0.2.0-rc.2 assessment](docs/2026-10-01-dsh-0.2.0-rc.2-assessment.md): the last seam change this branch targeted.
+- [0.1.7-rc.1 assessment](docs/2026-09-24-dsh-0.1.7-rc.1-assessment.md): historical snapshot.
 - [0.1.5-rc.1 assessment](docs/2026-09-10-dsh-0.1.5-rc.1-assessment.md): historical snapshot.
 
-See [GitHub Releases](https://github.com/wenzetan/dsh-llm-newapi/releases) for published changes and downloadable packages.
+The npm packages remain published and installable; they will not receive further updates. Published versions and their host pairings are recorded in the repository history.
