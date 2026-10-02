@@ -590,20 +590,38 @@ export function apply(ctx: Context, config: Config): void {
   // the browser, and a plain HTTP forward proxy works because Node performs
   // the request.
   //
-  // The channel mounts through the connection service's public
-  // `rpc.handle(channel, handler)` — the shape `HostConnectionHandle`
-  // advertises on the dsh 0.2.0 line. The 0.1.7 workaround (passing our own
-  // inject scope as an owner to a private `register`) is gone with the
-  // method: upstream made the service itself depend on `webServer`, so the
-  // registry runs every `handle` call inside a scope that already has the
-  // route table, and the channel installs without this plugin threading a
-  // context through. No `as unknown as` cast remains.
+  // The channel mounts through the connection service's own
+  // `register(owner, channel, handler)`, not through the public
+  // `rpc.handle(channel, handler)` the type advertises. 0.2.0 did NOT fix
+  // what made `handle` unusable on 0.1.7: its `rpc` getter still captures
+  // `this.ctx`, the connection service's own scope. That scope never has
+  // `webServer` injected — the service declares `inject = ['credentials']`
+  // and only mounts the web transport inside `ctx.inject(['webServer'], …)`
+  // — so `register` evaluates `owner.webServer.register(route)`, cordis
+  // answers `cannot get property "webServer" without inject`, and the throw
+  // is swallowed by the effect. The channel then silently never appears and
+  // the browser meets the SPA fallback's 405 (the CI boot check catches
+  // exactly this; upstream itself only ever calls `rpc.intercept`, which
+  // takes the interceptor path that does not touch `webServer`).
+  // `register` is the method `rpc.handle` delegates to; passing our own
+  // inject scope as the owner gives it a context that HAS `webServer`.
+  // The private method is not on `HostConnectionHandle`, so its shape is
+  // declared here — `private` in TypeScript is compile-time only, and the
+  // method is present on the service prototype at runtime.
   //
   // Both services are injected so registration waits for each to exist and
   // re-runs if either reloads.
   ctx.inject(['connection', 'webServer'], (cctx) => {
     const connection = cctx.get('connection') as HostConnectionHandle
-    cctx.effect(() => connection.rpc.handle(
+    const registrar = connection as unknown as {
+      register(
+        owner: unknown,
+        channel: string,
+        handler: (endpoint: string, payload: unknown, signal: AbortSignal) => Promise<unknown>,
+      ): () => Promise<void>
+    }
+    cctx.effect(() => registrar.register(
+      cctx,
       '/llm-newapi',
       (endpoint: string, payload: unknown, signal: AbortSignal) => {
         if (endpoint !== 'models-dev-params') {

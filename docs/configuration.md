@@ -116,10 +116,10 @@ defaultReasoningEffort: medium
 
 ### 宿主版本过低 / 通道不可用
 
-启动报 `dsh-llm-newapi requires dsh >= 0.2.0-rc.1` 表示宿主的 `@deepseek-ai/dsh-llm` 低于本插件的下限：0.2.0 线把自有 RPC 通道的注册换成了公开的 `connection.rpc.handle`，0.1.7 及更早宿主没有这个接缝。按提示升级宿主即可：
+启动报 `dsh-llm-newapi requires dsh >= 0.2.0-rc.1` 表示宿主的 `@deepseek-ai/dsh-llm` 低于本插件的下限。本插件只服务 0.2.0 线：0.1.7 与更早宿主的 `dsh-llm` 具名导出面与 0.2.0 不完全相同，且消息词表有别，插件不再承诺在其上可用。按提示升级宿主即可：
 
 ```sh
 npm install -g @deepseek-ai/dsh@0.2.0-rc.1
 ```
 
-如果必须留在 0.1.7 或 0.1.5 线，请改装与该宿主线配套的已发布插件版本（详见 [README 版本表](../README.zh-CN.md#先选对版本)）。自有 RPC 通道（models.dev 参数查询）在 0.2.0 线上由 Connection 服务自行完成 `webServer` 注册；通道未挂上时浏览器会撞上 SPA fallback 的 405，此时先确认插件版本与宿主线配套、以及 Web 是否已重启。
+如果必须留在 0.1.7 或 0.1.5 线，请改装与该宿主线配套的已发布插件版本（详见 [README 版本表](../README.zh-CN.md#先选对版本)）。自有 RPC 通道（models.dev 参数查询）在两条宿主线上都走 connection 服务自身的 `register(owner, channel, handler)`；通道未挂上时浏览器会撞上 SPA fallback 的 405，此时先确认插件版本与宿主线配套、以及 Web 是否已重启。

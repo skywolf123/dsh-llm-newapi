@@ -2,7 +2,7 @@
 
 [返回 README](../README.zh-CN.md) · [配置指南](configuration.md) · [实现设计](../DESIGN.md)
 
-本文面向维护者。当前包版本为 `0.2.0-rc.2-v0.1`，适配 dsh `0.2.0` 单宿主线（开发与 CI 固定 `0.2.0-rc.2`，peer 下限与运行时最低版本为 `0.2.0-rc.1`）。**本分支尚未发布**：npm 上插件的 `latest` 与 `next` 都仍指向 0.1.7 线的 `0.1.7-rc.1-v0.3`，0.1.5 线冻结在 `0.1.5-rc.3-v0.3`。本轮把自有 RPC 通道的注册从私有的 `connection.register(owner, channel, handler)` 换成公开的 `connection.rpc.handle(channel, handler)`，并把宿主 pin、快照与 CI 一并抬到 0.2.0 线；`0.1.7` 及更早宿主由入口版本 guard 明确拒绝。本轮保持 RC，不执行正式版晋升。
+本文面向维护者。当前包版本为 `0.2.0-rc.2-v0.1`，适配 dsh `0.2.0` 单宿主线（开发与 CI 固定 `0.2.0-rc.2`，peer 下限与运行时最低版本为 `0.2.0-rc.1`）。**本分支尚未发布**：npm 上插件的 `latest` 与 `next` 都仍指向 0.1.7 线的 `0.1.7-rc.1-v0.3`，0.1.5 线冻结在 `0.1.5-rc.3-v0.3`。本轮把宿主 pin、导出面快照与 CI 一并抬到 0.2.0 线（`0.2.0` 相对 `0.1.7` 的具名导出多 2 个）；`0.1.7` 及更早宿主由入口版本 guard 明确拒绝。自有 RPC 通道的注册仍是「把自身注入作用域作为 owner 传给 `connection.register`」——0.2.0 并未修掉让公开 `rpc.handle` 不可用的那个作用域问题，详见下文。本轮保持 RC，不执行正式版晋升。
 
 ## 版本号规则（跟随宿主）
 
@@ -124,7 +124,7 @@ npm pack
 
 旧线发布说明：0.1.5 线的 tag `v0.1.5-rc.3-v0.3` 指向一个专门的发布提交（基于该线最后的功能提交，仅改写版本号并带上当时的 CI 快照），因此 tag 内的 `package.json` 版本与 npm 上的包一致。推送该 tag 时 CI 的 `boot` job 会跳过——CI 固定宿主是 `0.2.0-rc.2`，旧线代码会按版本 guard 拒绝启动，这是预期行为；`build`/`plugin-check`/`release` 仍会运行，失败仍会阻断发布；npm 上版本已存在时发布步骤自动跳过（rerun-safe）。0.1.7 线的 tag 同理跳过 `boot`。
 
-关于 RPC 通道：0.2.0 宿主把 0.1.7 时期的私有变通正式收编为公开接口。0.1.7 那轮 `connection.rpc.handle()` 不可用——它内部的 effect 会抛 `cannot get property "webServer" without inject` 并被吞掉，导致通道静默缺失、浏览器撞上 405——插件只能把自身作用域作为 owner 传给私有的 `connection.register(owner, channel, handler)`。0.2.0 删除了该私有方法，Connection 服务自己注入 `webServer`，插件直接用 `connection.rpc.handle(channel, handler)`：handler 多一个第 4 参数 `peer`，本插件少声明它仍可赋值；`as unknown as { register(...) }` 的类型转换已删除。细节见 [DESIGN](DESIGN.md)；`test/smoke.mjs` 的 `FakeConnection` 已按 0.2.0 的注入形态（`static inject = ['webServer']`）复现该路径（安装时若 `webServer` 不可用会直接抛错，不再是静默缺失）；真实宿主上的端到端启动检查是最终防线，本轮尚未执行。
+关于 RPC 通道：插件走的是 connection 服务自身的 `register(owner, channel, handler)`，**不是**类型上公开的 `connection.rpc.handle(channel, handler)`。原因与 0.1.7 相同且 0.2.0 没有修：「`rpc` getter 捕获服务自身 `ctx`，该作用域没有注入 `webServer`」（服务只声明 `inject = ['credentials']`），`register` 内部求值 `owner.webServer.register(route)` 时 cordis 抛 `cannot get property "webServer" without inject` 并被 effect 吞掉，通道静默缺失、浏览器撞 405。`dsh-client-connection@0.2.0-rc.2` 的 `rpc.handle` 仍委托给同一个 `register(this.ctx, …)`；上游自己只用 `rpc.intercept('/api', …)`。把自身注入作用域当 owner 传进去即可修好，`register` 在 0.1.7 与 0.2.0 上都存在（私有，故类型上要 cast）。细节见 [DESIGN](DESIGN.md)；`test/smoke.mjs` 的 `FakeConnection` 忠实复现了「只有 owner 作用域才有 `webServer`」的约束（传错 owner 会抛错，不再是静默缺失）；CI 的真实启动检查是最终防线——本分支首次运行时正是它抓出了 405。本沙箱无法执行真实启动（`/root/.dsh/profiles/web` 只读），需在装了 `0.2.0-rc.2` 的终端复验。
 
 锁文件说明：本轮没有删除锁与 `node_modules` 重装，而是从改写后的 `package.json` 最小重新求解——两个 dsh 包树里共 18 个条目的版本切到 `0.2.0-rc.2`，**非 dsh 依赖全部保持原版本**。同时移除 0.2.0 不再需要的 9 个 dsh 内部包（`dsh-app-boot`、`dsh-home-paths`、`dsh-invariants`、`dsh-package-manifest`、`dsh-scope`、`dsh-system-prompt`、`cordis-plugin-group`、`cordis-plugin-include` 等）和 16 个随 0.1.7 子树消失的传递依赖（`ajv`、`semver`、`fast-uri`、`json-schema-traverse`、`resolve.exports`、8 个 `node-addon-*` 等），因此 `package-lock.json` 条目数从 210 降到 186（净 -24：25 条移除、1 条新增）。评审时按 `npm ls` 对照确认没有意外的主版本跃迁。
 

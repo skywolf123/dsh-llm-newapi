@@ -26,8 +26,7 @@
  *     link-time SyntaxError failure mode without network access.
  *  C. Old-host rejection fixture (always, offline): the same copied entry
  *     sees a 0.1.7-rc.2 package version — the previous supported host line,
- *     which this release deliberately drops (the new Connection RPC registry
- *     has no 0.1.7 equivalent) — and must fail with the explicit
+ *     which this release deliberately drops — and must fail with the explicit
  *     minimum-version and upgrade guidance, never a raw resolver error.
  *  D. Snapshot drift guard (always, offline): the installed
  *     @deepseek-ai/dsh-llm must be a version recorded as sharing the checked-in
@@ -38,7 +37,7 @@
  *  E. Rejected-host link guard (always, offline): the built entry's
  *     `@deepseek-ai/dsh-llm` imports must ALSO exist on the older 0.1.7-line
  *     surface. The version guard lives inside the entry, so it only produces
- *     its friendly upgrade message if the module links first; a 0.2.0-only
+ *     its friendly upgrade message if the module links first; a 0.2.0-rc-only
  *     import would instead surface a raw ESM SyntaxError on that host.
  */
 import assert from 'node:assert/strict'
@@ -210,11 +209,12 @@ function namedImportsFrom(source, specifier) {
 
 // ── Block D (always): the checked-in snapshot matches the installed host package ──
 // The snapshot records the *seam surface* of the 0.2.0 host line plus the
-// versions known to share it, not a single patch version: upstream re-cuts an
-// RC with identical code (0.1.5-rc.2 changed nothing but version references),
-// and a version-equality assertion would reject that for no reason. Membership
-// stays explicit on purpose — meeting an unlisted version must force someone to
-// compare surfaces and record the result rather than silently pass.
+// versions known to share it (0.2.0-rc.1 and 0.2.0-rc.2 today), not a single
+// patch version: upstream re-cuts an RC with identical code (0.1.5-rc.2
+// changed nothing but version references), and a version-equality assertion
+// would reject that for no reason. Membership stays explicit on purpose —
+// meeting an unlisted version must force someone to compare surfaces and
+// record the result rather than silently pass.
 {
   const snapshot = JSON.parse(readFileSync(SNAPSHOT_PATH, 'utf8'))
   const manifest = await import('@deepseek-ai/dsh-llm/package.json', { with: { type: 'json' } })
@@ -237,7 +237,7 @@ function namedImportsFrom(source, specifier) {
 
 // ── Block E (always, offline): the entry still links on the REJECTED host line ──
 // The friendly "upgrade the host" message comes from the entry's own version
-// guard, which only runs after the module graph links. If a 0.2.0-only symbol
+// guard, which only runs after the module graph links. If a 0.2.0-rc-only symbol
 // ever enters the entry's static imports, a real 0.1.7 host gets a raw
 // `SyntaxError: does not provide an export named …` instead — exactly the
 // failure mode this repository exists to avoid. Blocks B and C cannot catch

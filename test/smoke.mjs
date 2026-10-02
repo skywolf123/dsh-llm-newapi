@@ -42,33 +42,28 @@ class FakeWebServer extends Service {
 }
 
 /**
- * The 0.2.0 connection service, reproduced faithfully enough to catch a
- * regression. The service itself depends on `webServer` (mirrored as a static
- * `inject`), so the public `connection.rpc.handle(channel, handler)` registry
- * installs the route from a scope that already has the web server available —
- * no owner argument, and the plugin no longer threads its own context
- * through. The 0.1.7 shape (a private `register(owner, channel, handler)` the
- * plugin had to call with its own inject scope, because `rpc.handle`'s getter
- * captured a context without `webServer`) is gone from the host line.
+ * The 0.1.7 connection service, reproduced faithfully enough to catch a
+ * regression. On the real package `rpc.handle` is unusable: its `rpc` getter
+ * captures the service's OWN context, which injects no `webServer`, so the
+ * inner `owner.webServer.register(route)` throws the cordis guard error and
+ * the effect swallows it. Only `register(owner, channel, handler)` called with
+ * a context that injected `webServer` can install a channel — which is what
+ * the plugin must therefore do.
  */
 class FakeConnection extends Service {
-  static inject = ['webServer']
-
   constructor(ctx, channels) {
     super(ctx, 'connection')
     this.channels = channels
-    // Cordis resolves the static inject when the fiber is built; mirror it
-    // here so the scope that runs `handle` has webServer available.
-    this.webServer = ctx.webServer
   }
 
   get rpc() {
-    return { handle: (channel, handler) => this.register(channel, handler) }
+    const owner = this.ctx
+    return { handle: (channel, handler) => this.register(owner, channel, handler) }
   }
 
-  register(channel, handler) {
-    return this.ctx.effect(() => {
-      const dispose = this.webServer.register({ kind: 'prefix', path: channel })
+  register(owner, channel, handler) {
+    return owner.effect(() => {
+      const dispose = owner.webServer.register({ kind: 'prefix', path: channel })
       this.channels.push({ channel, handler })
       return dispose
     })
@@ -387,7 +382,7 @@ function stubModelsListing() {
   await ctx.plugin(FakeConnection, registered)
 
   // The inject scope ran as soon as both services appeared. Loopback-only
-  // exposure is the connection service's own fence on the 0.2.0 line:
+  // exposure is the connection service's own fence on the 0.1.7 line:
   // channel registration no longer carries a per-handle authority option.
   assert.equal(registered.length, 1)
   assert.equal(registered[0].channel, '/llm-newapi')

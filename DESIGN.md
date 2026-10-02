@@ -43,9 +43,7 @@
 
 插件加载时注册供应商、适配器和模型发现处理器。settings 或 connection 服务稍后就绪时，通过 `ctx.inject` 声明自带设置页（`settings.configure({ auto: false })`）并安装 RPC，避免因加载顺序而漏注册。注册和样式等资源随对应的 Cordis 作用域释放。
 
-自有 RPC 通道的注册方式需要单独说明：0.2.0 宿主线上 `connection.rpc.handle(channel, handler)` 可以直接使用。Connection 服务自己依赖 `webServer`，`handle` 在服务自身的 effect 里完成 `webServer.register(route)`，所以插件只要在注入作用域里调用一次即可，不需要把自身作用域当作 owner 传进去。插件里 `as unknown as { register(...) }` 的类型转换已删除，handler 少声明第 4 个 `peer` 参数仍可赋值。
-
-0.1.7 时期存在一段变通，原因值得留档：那时 `handle` 的 `rpc` getter 捕获服务自身 `ctx`，该作用域没有注入 `webServer`，内部求值 `owner.webServer.register(route)` 时 cordis 抛出 `cannot get property "webServer" without inject`，异常又被 effect 吞掉，于是通道静默缺失、浏览器只撞上 SPA fallback 的 405；插件只能把自身注入作用域当 owner 传给私有的 `register(owner, channel, handler)`。0.2.0 把该私有方法删除、由服务自行注入 `webServer`，这段变通随之失效也不再需要。该通道注册会由 `test/smoke.mjs` 的 `FakeConnection`（按 0.2.0 的静态 `webServer` 注入形态复现）覆盖；CI 的真实启动检查守护的是整体启动路径。
+自有 RPC 通道的注册方式需要单独说明：插件走的是 connection 服务自身的 `register(owner, channel, handler)`，**不是**类型上公开的 `connection.rpc.handle(channel, handler)`。原因和 0.1.7 时期一样：`rpc` getter 捕获的是 `this.ctx`，即 connection 服务自身的作用域，而**那个作用域从未注入 `webServer`**（服务只声明 `inject = ['credentials']`，Web 传输是挂在自己的 `ctx.inject(['webServer'], …)` 子作用域里）。于是 `register` 内部求值 `owner.webServer.register(route)` 时 cordis 抛 `cannot get property "webServer" without inject`，异常又被 effect 吞掉，通道静默缺失、浏览器只撞上 SPA fallback 的 405。0.2.0 **没有**修这个问题：`dsh-client-connection@0.2.0-rc.2` 的 `rpc.handle` 仍然委托给同一个 `register(this.ctx, …)`；上游自己只用 `rpc.intercept('/api', …)`，那条路径不碰 `webServer`。把自身注入作用域当 owner 传进去，就得到一个**有** `webServer` 的上下文，这正是 `rpc.handle` 本该做的事。该方法在 0.1.7 与 0.2.0 上都存在（私有，故不在 `HostConnectionHandle` 类型上），运行时在服务原型上可用；handler 少声明第 4 个 `peer` 参数仍可赋值。该注册路径由 `test/smoke.mjs` 的 `FakeConnection` 覆盖（它忠实复现了「owner 作用域才有 `webServer`」这一约束：传错 owner 会直接抛出），CI 的真实启动检查是最终防线——本分支第一次跑它时正是它抓出了 405。
 
 配置以 schemastery schema 声明，所有字段标记为 volatile：Loader 在 profile patch 只改动 volatile 字段时就地更新运行中的配置引用，不重新加载插件。每次请求读取一次引用快照（`snapshotConfig`）并据此解析密钥，配置热更新不会改变正在进行的请求。写入前由 `dsh-config-editor` 用完整 schema 校验（拒绝非法 URL、空过滤项等），异常快照也不能覆盖最后一次可用配置。重试策略是在注册时读取的，所以 `options()` 检测到变化时通过 `registration.replace` 更新，避免短暂移除模型路由。
 
